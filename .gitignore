@@ -1,0 +1,20 @@
+# SecForge runtime data (created under /opt/secforge on install)
+reports/
+backups/
+tools/
+wordlists/
+venv/
+
+# Runtime config (never committed)
+config/secforge.conf
+config/.authorized_targets
+
+# Installer-generated tool links/wrappers in bin; keep SecForge wrappers tracked
+bin/*
+!bin/secforge-*
+
+# Editor/OS noise
+.DS_Store
+*.swp
+*.swo
+*.tmp

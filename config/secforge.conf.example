@@ -1,0 +1,46 @@
+# SecForge configuration (example)
+#
+# During install, this file is copied to `/opt/secforge/config/secforge.conf` if it does not exist.
+# SecForge NEVER overwrites the real `secforge.conf` during updates.
+#
+# This file is intentionally verbose; it is the main “knobs” surface for vibecoders.
+
+# Root install location (locked)
+SECFORGE_ROOT="/opt/secforge"
+
+# Runtime authorization cache (created automatically)
+AUTHORIZED_TARGETS_FILE="/opt/secforge/config/.authorized_targets"
+
+# Scan defaults (ethical + vibecoder-friendly)
+SCAN_DELAY_MS="200"
+MAX_CONCURRENT_TOOLS="3"
+DEFAULT_TIER="1" # 1 = Tier 1 (passive). Tier 2 is always explicit opt-in.
+
+# Network scan defaults
+NMAP_TIMING="-T3"
+NMAP_TOP_PORTS="1000"
+
+# Circuit breaker (pause if target slows down)
+CIRCUIT_BREAKER_THRESHOLD_SECONDS="10"
+CIRCUIT_BREAKER_COOLDOWN_SECONDS="30"
+
+# Tool timeouts (seconds)
+TIMEOUT_WEB_SECONDS="600"
+TIMEOUT_PORTSCAN_SECONDS="1800"
+TIMEOUT_HARDENING_SECONDS="1800"
+TIMEOUT_CLAMAV_SECONDS="3600"
+
+# Sudo usage policy for sudo-only tools (Masscan, optional root Nmap modes, full filesystem scans)
+# - ask: always ask the user before sudo
+# - never: skip sudo-only steps
+# - always: allow sudo for sudo-only steps (still ask before any config changes)
+ALLOW_SUDO_TOOLS="ask"
+
+# Update strategy for apt packages:
+# - only-upgrade: only upgrade packages SecForge installed (safer default)
+# - full-upgrade: full system upgrade (requires explicit confirmation)
+APT_UPDATE_STRATEGY="only-upgrade"
+
+# Installer writes these at install-time (example value shown)
+INSTALLED_CATEGORIES=""
+INSTALLED_TOOLS=""
