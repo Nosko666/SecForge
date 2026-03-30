@@ -132,6 +132,8 @@ Built-in web checks (scan scripts implement these, no extra tools):
 | jwt_tool | `python3 /opt/secforge/tools/jwt_tool/jwt_tool.py TOKEN -A` | text |
 | Interactsh | `interactsh-client -json -o /opt/secforge/reports/SESSION/api/interactsh.json` | JSON |
 
+Note: Interactsh provides an out-of-band (OOB) callback server for detecting blind SSRF, blind XSS, blind SQLi, and blind command injection. Nuclei has built-in interactsh integration — when running OOB templates it uses interactsh callbacks automatically. The standalone client can also be used with ZAP, Commix, and SQLMap for blind injection testing. Start the client before running other tools so it captures callbacks during scans.
+
 ### Category 3: Network Scanning
 | Tool | Command | Output |
 |------|---------|--------|
@@ -249,10 +251,58 @@ After any scan, run:
 This writes:
 - `/opt/secforge/reports/SESSION/findings.json`
 
+### findings.json schema (reference)
+
+`findings.json` is the unified output that the assistant must read to summarize results and drive fixes. Minimal schema:
+
+```json
+{
+  "scan_date": "2026-03-30T14:30:00Z",
+  "target": "example.com",
+  "scan_profile": "full_web",
+  "tools_run": ["nuclei", "nmap", "zap", "testssl"],
+  "summary": { "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0 },
+  "findings": [
+    {
+      "id": "SF-001",
+      "severity": "CRITICAL",
+      "tool": "nuclei",
+      "also_found_by": ["zap"],
+      "category": "sql-injection",
+      "title": "SQL Injection in login form",
+      "url": "https://example.com/api/login",
+      "description": "Plain-English explanation",
+      "evidence": "Redacted proof string",
+      "remediation": "Plain-English fix guidance",
+      "cwe": "CWE-89",
+      "owasp": "A03:2021-Injection",
+      "status": "open"
+    }
+  ]
+}
+```
+
 ## How To Present Findings
 
-Summarize by severity and ask before fixing anything:
+Present findings grouped by severity using this format:
 
+```
+🔴 CRITICAL (2 findings)
+  SF-001: SQL Injection in login form — /api/login
+  SF-002: Exposed admin panel with default credentials — /admin
+
+🟠 HIGH (5 findings)
+  SF-003: Missing Content-Security-Policy header
+  ...
+
+🟡 MEDIUM (...) ...
+🔵 LOW (...) ...
+ℹ️  INFO (...) ...
+
+Total: 50 findings across 10 tools
+```
+
+Then ask:
 - “Would you like me to start fixing these? I’ll go critical → high → medium. I’ll explain each fix, show the exact change, back up configs, apply with your approval, then re-scan to verify.”
 
 ## How To Fix Things (every time)
@@ -265,7 +315,8 @@ For every fix:
 5. Back up original config to `/opt/secforge/backups/SESSION/`
 6. Apply the fix
 7. Re-run the scan that found the issue
-8. Mark `findings.json` items as fixed only after verification
+8. Mark `findings.json` items as fixed only after verification:
+   - Update `status` from `"open"` → `"fixed"` (do not mark fixed unless verified)
 
 ## Lockout Prevention Protocol (non-negotiable for SSH/UFW/fail2ban)
 

@@ -37,8 +37,13 @@ These decisions are locked to keep SecForge reliable for vibecoders (easy instal
 
 4. Runtime permissions: use a `secforge` group + setgid directories
    - Create a `secforge` group.
-   - Set runtime dirs to `root:secforge` and `2775` (setgid) so group members can write and files inherit group:
-     - `reports/`, `backups/`, `tools/`, `wordlists/`, `config/` (and any other write-heavy dirs).
+   - Make **only the directories that must be writable by non-root scans** group-writable. Do **not** make git-cloned tool repos group-writable (otherwise a non-root user could drop git hooks and get root code execution when `update-all.sh` runs `git pull`).
+     - `reports/`: `root:secforge` + `2775` (scan outputs must be writable)
+     - `backups/`: `root:secforge` + `2750` (root writes; group can read)
+     - `config/`: `root:secforge` + `2755` (directory not writable); but the runtime files are group-writable:
+       - `config/secforge.conf`: `root:secforge` + `0664`
+       - `config/.authorized_targets`: `root:secforge` + `0664`
+     - `tools/` and `wordlists/`: `root:root` + `0755` (read-only for scans; avoids privilege escalation)
    - Add `$SUDO_USER` to `secforge` and prompt to re-login so scans work without sudo.
 
 5. OWASP ZAP packaging: tarball under `/opt/secforge/tools/`, no snap/.deb
@@ -710,7 +715,7 @@ Build the **menu installer** (`/opt/secforge/scripts/install.sh`) so it:
 ### Install Methods Per Tool
 
 **apt install:**
-nmap, masscan, netcat-openbsd, sslscan, hydra, john, hashcat, clamav, rkhunter, fail2ban, aide, auditd, wapiti, libopenscap8, python3-pip, python3-venv, ruby, default-jre (for ZAP), nodejs, npm, dnsutils, jq, tmux, at, etckeeper, debsums, default-mysql-client, nikto
+nmap, masscan, netcat-openbsd, sslscan, hydra, john, hashcat, ufw, clamav, clamav-freshclam, rkhunter, fail2ban, aide, auditd, wapiti, openscap-scanner, openscap-utils, python3-pip, python3-venv, ruby, default-jre (for ZAP), nodejs, npm, dnsutils, jq, tmux, at, etckeeper, debsums, default-mysql-client, nikto
 
 **apt install (mobile/APK category only):**
 golang-go (only needed to build the APKHunt binary during install)
@@ -724,9 +729,10 @@ nuclei, ffuf, dalfox, subfinder, httpx, interactsh-client, osv-scanner, truffleh
 Notes:
 - The installer must detect CPU architecture (`uname -m`) and download the matching asset (amd64 vs arm64) when using prebuilt binaries.
 - Prefer extracting release zips/tars into `/opt/secforge/bin/` to keep the “everything under /opt/secforge/” principle.
+- `vulnapi` distribution/repo is not standardized across forks; treat as optional and allow configuring its source (e.g., via `SECFORGE_VULNAPI_REPO`).
 
 **pip install (inside /opt/secforge/venv/):**
-sqlmap, xsstrike, commix, apkleaks, pip-audit, wafw00f, ssh-audit, dnsrecon (optional), checkov (optional), prowler (optional), requests, beautifulsoup4
+sqlmap, commix, apkleaks, pip-audit, wafw00f, ssh-audit, dnsrecon (optional), checkov (optional), prowler (optional), requests, beautifulsoup4
 
 Notes:
 - Some optional pip tools have minimum Python version requirements; the installer should detect the system Python and skip with a clear message if unsupported.
@@ -741,6 +747,7 @@ testssl.sh (github.com/drwetter/testssl.sh)
 whatweb (github.com/urbanadventurer/WhatWeb)
 jwt_tool (github.com/ticarpi/jwt_tool)
 corscanner (github.com/chenjj/CORScanner)
+xsstrike (github.com/s0md3v/XSStrike)
 lynis (github.com/CISOfy/lynis)
 apkdeeplens (github.com/d78ui98/APKDeepLens)
 apkhunt (github.com/Cyber-Buddy/APKHunt)
@@ -768,8 +775,13 @@ Download a small curated subset from SecLists (not the full 4.5GB):
 6. After installation:
    - Create wrappers/symlinks in `/opt/secforge/bin/` for each tool
    - Add /opt/secforge/bin to PATH in /etc/profile.d/secforge.sh
-   - Create `secforge` group + setgid permissions so non-root scans can write:
-     - `reports/`, `backups/`, `tools/`, `wordlists/`, and `config/` (needed for `.authorized_targets`)
+   - Create `secforge` group + safe permissions so non-root scans can write reports without letting non-root users modify tool repos:
+     - `reports/`: `root:secforge` + `2775`
+     - `backups/`: `root:secforge` + `2750`
+     - `config/`: `root:secforge` + `2755` and create runtime files as `0664`:
+       - `config/secforge.conf`
+       - `config/.authorized_targets`
+     - `tools/` and `wordlists/`: `root:root` + `0755`
    - Ensure `atd` is installed/enabled (needed for auto-revert safety during hardening)
    - Initialize `etckeeper` (track `/etc` changes) and commit a baseline snapshot
    - Initialize AIDE database (aide --init)
@@ -895,6 +907,7 @@ Write a README that includes:
 30. `/opt/secforge/scripts/system-check.sh` — Output a JSON system profile (Ubuntu/arch/Python/Docker/RAM/disk/installed categories)
 31. `/opt/secforge/scripts/hardening-watchdog.sh` — Optional heartbeat-based auto-revert for multi-file hardening
 32. `/opt/secforge/config/secforge.conf.example` — Default config template (tracked in git; installer copies to secforge.conf if missing)
+33. `/opt/secforge/scripts/_lib.sh` — Shared bash helpers for installers/scripts (internal)
 
 ## Build Order
 
@@ -934,7 +947,11 @@ Use these as “go/no-go” checklists so each phase ships something complete, s
   - [ ] Update/show versions
 - [ ] Category installers exist and work: `install-webapp.sh`, `install-api.sh`, `install-network.sh`, `install-ssl.sh`, `install-passwords.sh`, `install-secrets.sh`, `install-mobile.sh`, `install-compliance.sh`, `install-hardening.sh`, `install-dependencies.sh`, `install-emaildns.sh`, `install-database.sh`, `install-containers.sh`
 - [ ] Creates `/opt/secforge` directory tree + runtime permissions:
-  - [ ] `secforge` group created; setgid permissions on `reports/`, `backups/`, `tools/`, `wordlists/`, `config/`
+  - [ ] `secforge` group created; permissions set:
+    - [ ] `reports/`: `root:secforge` + `2775`
+    - [ ] `backups/`: `root:secforge` + `2750`
+    - [ ] `config/`: `root:secforge` + `2755` and runtime files (`secforge.conf`, `.authorized_targets`) are group-writable
+    - [ ] `tools/` and `wordlists/`: `root:root` + `0755`
   - [ ] Current user added to `secforge` group (with clear “re-login required” message)
 - [ ] Packaging rules enforced:
   - [ ] pip tools go into `/opt/secforge/venv` only (never system pip)
