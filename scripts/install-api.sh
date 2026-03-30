@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 SECFORGE_ROOT="${SECFORGE_ROOT:-/opt/secforge}"
 SECFORGE_VENV="${SECFORGE_VENV:-${SECFORGE_ROOT}/venv}"
-SECFORGE_VULNAPI_REPO="${SECFORGE_VULNAPI_REPO:-}"
+SECFORGE_VULNAPI_REPO="${SECFORGE_VULNAPI_REPO:-cerberauth/vulnapi}"
 
 cfg_file="${SECFORGE_ROOT}/config/secforge.conf"
 
@@ -50,14 +50,9 @@ EOF
   sf_install_github_release_binary "projectdiscovery/interactsh" "interactsh-client" "${SECFORGE_ROOT}/bin/interactsh-client" || sf_warn "Failed to install interactsh-client"
   mark_tool_if_present "interactsh-client" "${SECFORGE_ROOT}/bin/interactsh-client"
 
-  # VulnAPI (optional; repo/distribution can vary)
-  if [[ -n "${SECFORGE_VULNAPI_REPO}" ]]; then
-    sf_install_github_release_binary "${SECFORGE_VULNAPI_REPO}" "vulnapi" "${SECFORGE_ROOT}/bin/vulnapi" || sf_warn "Failed to install vulnapi"
-    mark_tool_if_present "vulnapi" "${SECFORGE_ROOT}/bin/vulnapi"
-  else
-    sf_warn "VulnAPI repo not configured (SECFORGE_VULNAPI_REPO). Skipping vulnapi install."
-  fi
+  # VulnAPI (default repo can be overridden via SECFORGE_VULNAPI_REPO)
+  sf_install_github_release_binary "${SECFORGE_VULNAPI_REPO}" "vulnapi" "${SECFORGE_ROOT}/bin/vulnapi" || sf_warn "Failed to install vulnapi"
+  mark_tool_if_present "vulnapi" "${SECFORGE_ROOT}/bin/vulnapi"
 }
 
 main "$@"
-

@@ -729,7 +729,7 @@ nuclei, ffuf, dalfox, subfinder, httpx, interactsh-client, osv-scanner, truffleh
 Notes:
 - The installer must detect CPU architecture (`uname -m`) and download the matching asset (amd64 vs arm64) when using prebuilt binaries.
 - Prefer extracting release zips/tars into `/opt/secforge/bin/` to keep the “everything under /opt/secforge/” principle.
-- `vulnapi` distribution/repo is not standardized across forks; treat as optional and allow configuring its source (e.g., via `SECFORGE_VULNAPI_REPO`).
+- `vulnapi` should default to `cerberauth/vulnapi` but allow overriding its source (e.g., via `SECFORGE_VULNAPI_REPO`) if forks use different distribution.
 
 **pip install (inside /opt/secforge/venv/):**
 sqlmap, commix, apkleaks, pip-audit, wafw00f, ssh-audit, dnsrecon (optional), checkov (optional), prowler (optional), requests, beautifulsoup4

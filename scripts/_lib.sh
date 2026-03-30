@@ -378,7 +378,7 @@ sf_install_github_release_binary() {
 
   if [[ "${archive}" == *.tar.gz || "${archive}" == *.tgz || "${archive}" == *.zip ]]; then
     sf_extract_archive_to_dir "${archive}" "${extract_dir}"
-    found="$(find "${extract_dir}" -maxdepth 4 -type f \\( -name "${expected_binary}" \\) -print | head -n1 || true)"
+    found="$(find "${extract_dir}" -maxdepth 4 -type f \( -name "${expected_binary}" \) -print | head -n1 || true)"
     if [[ -z "${found}" ]]; then
       found="$(find "${extract_dir}" -maxdepth 4 -type f -perm -111 -name "${expected_binary}*" | head -n1 || true)"
     fi
