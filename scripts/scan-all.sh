@@ -15,6 +15,34 @@ SECFORGE_CODE_PATH="${SECFORGE_CODE_PATH:-}"
 # shellcheck source=/dev/null
 . "${SCRIPT_DIR}/_lib.sh"
 
+INTERACTSH_PID=""
+ZAP_PID=""
+ZAP_API_BASE=""
+ZAP_STARTED="0"
+
+sf_kill_pid() {
+  local pid="${1:-}"
+  [[ -z "${pid}" ]] && return 0
+  if kill -0 "${pid}" 2>/dev/null; then
+    kill "${pid}" 2>/dev/null || true
+    sleep 1
+    kill -9 "${pid}" 2>/dev/null || true
+  fi
+}
+
+sf_cleanup_bg() {
+  set +e
+
+  if [[ "${ZAP_STARTED}" == "1" && -n "${ZAP_API_BASE}" ]] && command -v curl >/dev/null 2>&1; then
+    curl -fsS "${ZAP_API_BASE}/JSON/core/action/shutdown/" >/dev/null 2>&1 || true
+  fi
+
+  sf_kill_pid "${INTERACTSH_PID}"
+  sf_kill_pid "${ZAP_PID}"
+}
+
+trap sf_cleanup_bg EXIT
+
 sf_tool() {
   local name="$1"
   if [[ -x "${SECFORGE_ROOT}/bin/${name}" ]]; then
@@ -87,11 +115,36 @@ sf_builtin_web_checks() {
 
   # Cookie flags (best-effort)
   local headers cookies_total cookies_missing_secure cookies_missing_httponly cookies_missing_samesite
-  headers="$(curl -sS -I --max-time 10 "${base_url}/" 2>/dev/null || true)"
+  headers="$({ curl -sS -I --max-time 10 "${base_url}/" 2>/dev/null || true; } | tr -d '\r')"
   cookies_total="$(grep -ic '^set-cookie:' <<<"${headers}" || true)"
   cookies_missing_secure="$(grep -i '^set-cookie:' <<<"${headers}" | grep -vic ';\s*secure' || true)"
   cookies_missing_httponly="$(grep -i '^set-cookie:' <<<"${headers}" | grep -vic ';\s*httponly' || true)"
   cookies_missing_samesite="$(grep -i '^set-cookie:' <<<"${headers}" | grep -vic ';\s*samesite=' || true)"
+
+  # Clickjacking protection (best-effort)
+  local xfo_present csp_frame_ancestors_present clickjacking_protected
+  xfo_present="false"
+  csp_frame_ancestors_present="false"
+  clickjacking_protected="false"
+  if grep -qi '^x-frame-options:' <<<"${headers}"; then
+    xfo_present="true"
+    clickjacking_protected="true"
+  fi
+  if grep -qi '^content-security-policy:.*frame-ancestors' <<<"${headers}"; then
+    csp_frame_ancestors_present="true"
+    clickjacking_protected="true"
+  fi
+
+  # Basic SSRF probes (lightweight, non-destructive). We only record status/latency.
+  local probe ssrf_url_code ssrf_url_time ssrf_dest_code ssrf_dest_time ssrf_next_code ssrf_next_time
+  probe="$(curl -sS -o /dev/null --max-time 10 -w "%{http_code} %{time_total}" "${base_url%/}/?url=http://127.0.0.1:9" 2>/dev/null || echo "000 0")"
+  read -r ssrf_url_code ssrf_url_time <<<"${probe}" || true
+  sf_sleep_ms "${delay_ms}"
+  probe="$(curl -sS -o /dev/null --max-time 10 -w "%{http_code} %{time_total}" "${base_url%/}/?dest=http://127.0.0.1:9" 2>/dev/null || echo "000 0")"
+  read -r ssrf_dest_code ssrf_dest_time <<<"${probe}" || true
+  sf_sleep_ms "${delay_ms}"
+  probe="$(curl -sS -o /dev/null --max-time 10 -w "%{http_code} %{time_total}" "${base_url%/}/?next=http://127.0.0.1:9" 2>/dev/null || echo "000 0")"
+  read -r ssrf_next_code ssrf_next_time <<<"${probe}" || true
 
   SF_GIT_HEAD_CODE="${git_head_code}" \
   SF_ENV_CODE="${env_code}" \
@@ -102,16 +155,27 @@ sf_builtin_web_checks() {
   SF_COOKIES_NO_SECURE="${cookies_missing_secure}" \
   SF_COOKIES_NO_HTTPONLY="${cookies_missing_httponly}" \
   SF_COOKIES_NO_SAMESITE="${cookies_missing_samesite}" \
+  SF_XFO_PRESENT="${xfo_present}" \
+  SF_CSP_FRAME_ANCESTORS_PRESENT="${csp_frame_ancestors_present}" \
+  SF_CLICKJACKING_PROTECTED="${clickjacking_protected}" \
+  SF_SSRF_URL_CODE="${ssrf_url_code:-000}" \
+  SF_SSRF_URL_TIME="${ssrf_url_time:-0}" \
+  SF_SSRF_DEST_CODE="${ssrf_dest_code:-000}" \
+  SF_SSRF_DEST_TIME="${ssrf_dest_time:-0}" \
+  SF_SSRF_NEXT_CODE="${ssrf_next_code:-000}" \
+  SF_SSRF_NEXT_TIME="${ssrf_next_time:-0}" \
   SF_OUT_JSON="${out_json}" \
   python3 - <<'PY'
 import json
 import os
+
 
 def int_or_zero(s):
   try:
     return int(s)
   except Exception:
     return 0
+
 
 data = {
   "git_head_http_code": os.environ.get("SF_GIT_HEAD_CODE", "000"),
@@ -126,6 +190,25 @@ data = {
     "missing_secure": int_or_zero(os.environ.get("SF_COOKIES_NO_SECURE", "0")),
     "missing_httponly": int_or_zero(os.environ.get("SF_COOKIES_NO_HTTPONLY", "0")),
     "missing_samesite": int_or_zero(os.environ.get("SF_COOKIES_NO_SAMESITE", "0")),
+  },
+  "clickjacking": {
+    "protected": os.environ.get("SF_CLICKJACKING_PROTECTED", "false") == "true",
+    "x_frame_options_present": os.environ.get("SF_XFO_PRESENT", "false") == "true",
+    "csp_frame_ancestors_present": os.environ.get("SF_CSP_FRAME_ANCESTORS_PRESENT", "false") == "true",
+  },
+  "ssrf_probes": {
+    "url_param": {
+      "http_code": os.environ.get("SF_SSRF_URL_CODE", "000"),
+      "latency_seconds": os.environ.get("SF_SSRF_URL_TIME", "0"),
+    },
+    "dest_param": {
+      "http_code": os.environ.get("SF_SSRF_DEST_CODE", "000"),
+      "latency_seconds": os.environ.get("SF_SSRF_DEST_TIME", "0"),
+    },
+    "next_param": {
+      "http_code": os.environ.get("SF_SSRF_NEXT_CODE", "000"),
+      "latency_seconds": os.environ.get("SF_SSRF_NEXT_TIME", "0"),
+    },
   },
 }
 
@@ -144,6 +227,114 @@ EOF
   sf_ask_tty_yes "Type YES to run Tier 2 active tests (or anything else to skip):" "YES"
 }
 
+sf_zap_active_scan() {
+  local target_url="$1"
+  local out_json="$2"
+  local log_path="$3"
+  local max_wait_s="$4"
+
+  [[ -z "${target_url}" ]] && return 0
+
+  if ! command -v curl >/dev/null 2>&1; then
+    sf_warn "Skipping ZAP: curl not available."
+    return 0
+  fi
+
+  local zap_bin
+  if ! zap_bin="$(sf_tool zap.sh 2>/dev/null)"; then
+    sf_warn "Skipping ZAP: zap.sh not found."
+    return 0
+  fi
+
+  mkdir -p "$(dirname -- "${out_json}")" "$(dirname -- "${log_path}")"
+
+  local api_base="http://127.0.0.1:8080"
+  ZAP_API_BASE="${api_base}"
+
+  if curl -fsS "${api_base}/JSON/core/view/version/" >/dev/null 2>&1; then
+    sf_log "ZAP API already reachable at ${api_base} (reusing existing instance)."
+    ZAP_STARTED="0"
+  else
+    sf_log "Starting ZAP daemon..."
+    "${zap_bin}" -daemon -host 127.0.0.1 -port 8080 -config api.disablekey=true >>"${log_path}" 2>&1 &
+    ZAP_PID=$!
+    ZAP_STARTED="1"
+
+    local i
+    for i in $(seq 1 60); do
+      if curl -fsS "${api_base}/JSON/core/view/version/" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 1
+    done
+
+    if ! curl -fsS "${api_base}/JSON/core/view/version/" >/dev/null 2>&1; then
+      sf_warn "ZAP daemon did not start (skipping ZAP active scan)."
+      return 0
+    fi
+  fi
+
+  curl -fsS --get "${api_base}/JSON/core/action/accessUrl/" --data-urlencode "url=${target_url}" >/dev/null 2>>"${log_path}" || true
+
+  local spider_budget ascan_budget
+  spider_budget=$((max_wait_s / 3))
+  [[ "${spider_budget}" -lt 120 ]] && spider_budget=120
+  ascan_budget=$((max_wait_s - spider_budget))
+  [[ "${ascan_budget}" -lt 300 ]] && ascan_budget=300
+
+  local spider_id spider_resp
+  spider_resp="$(curl -fsS --get "${api_base}/JSON/spider/action/scan/" \
+    --data-urlencode "url=${target_url}" \
+    --data-urlencode "recurse=true" \
+    --data-urlencode "subtreeOnly=true" 2>>"${log_path}" || echo "")"
+  spider_id="$(python3 -c 'import json,sys; j=json.loads(sys.stdin.read() or "{}"); print(j.get("scan",""))' <<<"${spider_resp}" 2>/dev/null || echo "")"
+
+  if [[ -n "${spider_id}" ]]; then
+    local spider_deadline
+    spider_deadline=$(( $(date +%s) + spider_budget ))
+    while :; do
+      local status_resp status
+      status_resp="$(curl -fsS --get "${api_base}/JSON/spider/view/status/" --data-urlencode "scanId=${spider_id}" 2>>"${log_path}" || echo "")"
+      status="$(python3 -c 'import json,sys; j=json.loads(sys.stdin.read() or "{}"); print(j.get("status",""))' <<<"${status_resp}" 2>/dev/null || echo "")"
+      [[ "${status}" == "100" ]] && break
+      [[ "$(date +%s)" -ge "${spider_deadline}" ]] && { sf_warn "ZAP spider timed out."; break; }
+      sleep 2
+    done
+  fi
+
+  local ascan_id ascan_resp
+  ascan_resp="$(curl -fsS --get "${api_base}/JSON/ascan/action/scan/" \
+    --data-urlencode "url=${target_url}" \
+    --data-urlencode "recurse=true" 2>>"${log_path}" || echo "")"
+  ascan_id="$(python3 -c 'import json,sys; j=json.loads(sys.stdin.read() or "{}"); print(j.get("scan",""))' <<<"${ascan_resp}" 2>/dev/null || echo "")"
+
+  if [[ -n "${ascan_id}" ]]; then
+    local ascan_deadline
+    ascan_deadline=$(( $(date +%s) + ascan_budget ))
+    while :; do
+      local status_resp status
+      status_resp="$(curl -fsS --get "${api_base}/JSON/ascan/view/status/" --data-urlencode "scanId=${ascan_id}" 2>>"${log_path}" || echo "")"
+      status="$(python3 -c 'import json,sys; j=json.loads(sys.stdin.read() or "{}"); print(j.get("status",""))' <<<"${status_resp}" 2>/dev/null || echo "")"
+      [[ "${status}" == "100" ]] && break
+      [[ "$(date +%s)" -ge "${ascan_deadline}" ]] && { sf_warn "ZAP active scan timed out."; break; }
+      sleep 5
+    done
+  fi
+
+  curl -fsS --get "${api_base}/JSON/core/view/alerts/" \
+    --data-urlencode "baseurl=${target_url}" \
+    --data-urlencode "start=0" \
+    --data-urlencode "count=999999" >"${out_json}" 2>>"${log_path}" || true
+
+  if [[ "${ZAP_STARTED}" == "1" ]]; then
+    curl -fsS "${api_base}/JSON/core/action/shutdown/" >/dev/null 2>>"${log_path}" || true
+    wait "${ZAP_PID}" 2>/dev/null || true
+    ZAP_PID=""
+    ZAP_STARTED="0"
+    ZAP_API_BASE=""
+  fi
+}
+
 main() {
   local target="${1:-}"
   if [[ -z "${target}" ]]; then
@@ -156,16 +347,18 @@ main() {
   # shellcheck disable=SC1090
   source <("${SCRIPT_DIR}/preflight.sh" --target "${target}" --profile "all" --require-tools "curl,jq")
 
-  local timeout_web timeout_portscan timeout_hardening delay_ms threshold cooldown
+  local timeout_web timeout_portscan timeout_hardening timeout_zap delay_ms threshold cooldown
   timeout_web="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "TIMEOUT_WEB_SECONDS" || true)"
   timeout_portscan="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "TIMEOUT_PORTSCAN_SECONDS" || true)"
   timeout_hardening="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "TIMEOUT_HARDENING_SECONDS" || true)"
+  timeout_zap="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "TIMEOUT_ZAP_SECONDS" || true)"
   delay_ms="${SECFORGE_SCAN_DELAY_MS:-200}"
   threshold="${SECFORGE_CIRCUIT_BREAKER_THRESHOLD_SECONDS:-10}"
   cooldown="${SECFORGE_CIRCUIT_BREAKER_COOLDOWN_SECONDS:-30}"
   timeout_web="${timeout_web:-600}"
   timeout_portscan="${timeout_portscan:-1800}"
   timeout_hardening="${timeout_hardening:-1800}"
+  timeout_zap="${timeout_zap:-1800}"
 
   sf_log "Session: ${SECFORGE_SESSION_ID}"
   sf_log "Reports: ${SECFORGE_SESSION_DIR}"
@@ -174,6 +367,12 @@ main() {
   # Tier 1 (default)
   # ---------------------------
   if [[ "${SECFORGE_TARGET_HOST}" != "this_server" ]]; then
+    if [[ -z "${INTERACTSH_PID}" ]] && sf_tool interactsh-client >/dev/null 2>&1; then
+      sf_log "Starting interactsh-client (OOB callbacks)..."
+      "$(sf_tool interactsh-client)" -json -o "${SECFORGE_SESSION_DIR}/api/interactsh.json" >"${SECFORGE_SESSION_DIR}/api/interactsh.log" 2>"${SECFORGE_SESSION_DIR}/api/interactsh.log.err" &
+      INTERACTSH_PID=$!
+    fi
+
     sf_circuit_breaker_check "${SECFORGE_TARGET_URL}" "${threshold}" "${cooldown}"
 
     if sf_tool wafw00f >/dev/null 2>&1; then
@@ -184,9 +383,15 @@ main() {
       sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/whatweb.log" "$(sf_tool whatweb)" "${SECFORGE_TARGET_URL}" "--log-json=${SECFORGE_SESSION_DIR}/webapp/whatweb.json"
     fi
 
+    if sf_tool corscanner >/dev/null 2>&1; then
+      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/corscanner.log" "$(sf_tool corscanner)" -u "${SECFORGE_TARGET_URL}" -o "${SECFORGE_SESSION_DIR}/webapp/corscanner.json"
+    fi
+
     if sf_tool nuclei >/dev/null 2>&1; then
       sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/nuclei.log" "$(sf_tool nuclei)" -u "${SECFORGE_TARGET_URL}" -json-export "${SECFORGE_SESSION_DIR}/webapp/nuclei.json"
     fi
+
+    sf_circuit_breaker_check "${SECFORGE_TARGET_URL}" "${threshold}" "${cooldown}"
 
     if sf_tool ffuf >/dev/null 2>&1 && [[ -r "${SECFORGE_ROOT}/wordlists/directories.txt" ]]; then
       sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/ffuf.log" "$(sf_tool ffuf)" -u "${SECFORGE_TARGET_URL%/}/FUZZ" -w "${SECFORGE_ROOT}/wordlists/directories.txt" -o "${SECFORGE_SESSION_DIR}/webapp/ffuf.json" -of json
@@ -249,6 +454,10 @@ main() {
       sf_run "${timeout_portscan}" "${SECFORGE_SESSION_DIR}/network/nmap.log" "$(sf_tool nmap)" ${nmap_timing} -sV -sC --top-ports "${nmap_top}" -oX "${SECFORGE_SESSION_DIR}/network/nmap.xml" "${SECFORGE_TARGET_HOST}"
     fi
 
+    if sf_tool ssh-audit >/dev/null 2>&1; then
+      sf_run 60 "${SECFORGE_SESSION_DIR}/network/ssh-audit.json" "$(sf_tool ssh-audit)" --json "${SECFORGE_TARGET_HOST}"
+    fi
+
     if sf_tool masscan >/dev/null 2>&1; then
       local sudo_policy
       sudo_policy="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "ALLOW_SUDO_TOOLS" || true)"
@@ -272,6 +481,10 @@ main() {
     sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/lynis.stdout" "$(sf_tool lynis)" audit system --no-colors --logfile "${SECFORGE_SESSION_DIR}/hardening/lynis.log" --report-file "${SECFORGE_SESSION_DIR}/hardening/lynis.dat"
   fi
 
+  if sf_tool systemd-analyze >/dev/null 2>&1; then
+    sf_run 120 "${SECFORGE_SESSION_DIR}/hardening/systemd-security.txt" "$(sf_tool systemd-analyze)" security
+  fi
+
   if sf_tool clamscan >/dev/null 2>&1; then
     # Scoped scan by default; full / scan is opt-in.
     sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/clamav.stdout" "$(sf_tool clamscan)" -r /home /var/www /tmp /opt --log="${SECFORGE_SESSION_DIR}/hardening/clamav.log" --exclude-dir="^/proc" --exclude-dir="^/sys" || true
@@ -291,6 +504,26 @@ main() {
 
   if sf_tool debsums >/dev/null 2>&1; then
     sf_run 600 "${SECFORGE_SESSION_DIR}/hardening/debsums.log" "$(sf_tool debsums)" -s
+  fi
+
+  if sf_tool trivy >/dev/null 2>&1; then
+    local sudo_policy
+    sudo_policy="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "ALLOW_SUDO_TOOLS" || true)"
+    sudo_policy="${sudo_policy:-ask}"
+
+    if [[ "${EUID}" -eq 0 ]]; then
+      sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.log" "$(sf_tool trivy)" rootfs --format json --output "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.json" /
+    elif [[ "${sudo_policy}" == "always" ]]; then
+      sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.log" sudo "$(sf_tool trivy)" rootfs --format json --output "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.json" /
+    elif [[ "${sudo_policy}" == "ask" ]]; then
+      if sf_ask_tty_yes "Trivy rootfs can be more complete with sudo. Type YES to run with sudo:" "YES"; then
+        sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.log" sudo "$(sf_tool trivy)" rootfs --format json --output "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.json" /
+      else
+        sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.log" "$(sf_tool trivy)" rootfs --format json --output "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.json" /
+      fi
+    else
+      sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.log" "$(sf_tool trivy)" rootfs --format json --output "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.json" /
+    fi
   fi
 
   if [[ -r "${SCRIPT_DIR}/check-mysql.sh" ]]; then
@@ -319,6 +552,10 @@ main() {
   # ---------------------------
   if [[ "${SECFORGE_TARGET_HOST}" != "this_server" ]]; then
     if sf_tier2_opt_in; then
+      sf_circuit_breaker_check "${SECFORGE_TARGET_URL}" "${threshold}" "${cooldown}"
+
+      sf_zap_active_scan "${SECFORGE_TARGET_URL}" "${SECFORGE_SESSION_DIR}/webapp/zap.json" "${SECFORGE_SESSION_DIR}/webapp/zap.log" "${timeout_zap}"
+
       if sf_tool sqlmap >/dev/null 2>&1; then
         mkdir -p "${SECFORGE_SESSION_DIR}/webapp/sqlmap"
         sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/sqlmap/sqlmap.log" "$(sf_tool sqlmap)" -u "${SECFORGE_TARGET_URL}" --batch --forms --crawl=3 --output-dir="${SECFORGE_SESSION_DIR}/webapp/sqlmap"
@@ -335,6 +572,39 @@ main() {
       if sf_tool commix >/dev/null 2>&1; then
         mkdir -p "${SECFORGE_SESSION_DIR}/webapp/commix"
         sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/commix.log" "$(sf_tool commix)" --url="${SECFORGE_TARGET_URL}" --batch --output-dir="${SECFORGE_SESSION_DIR}/webapp/commix"
+      fi
+
+      if sf_tool wapiti >/dev/null 2>&1; then
+        sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/wapiti.log" "$(sf_tool wapiti)" -u "${SECFORGE_TARGET_URL}" -f json -o "${SECFORGE_SESSION_DIR}/webapp/wapiti.json"
+      fi
+
+      if sf_ask_tty_yes "Run SSH credential checks (Hydra/NetExec) against ${SECFORGE_TARGET_HOST}? Type YES to continue:" "YES"; then
+        local pw_list ssh_user ssh_users_file
+        pw_list="${SECFORGE_ROOT}/wordlists/passwords-top1000.txt"
+        ssh_user="${SECFORGE_SSH_USER:-}"
+        ssh_users_file="${SECFORGE_SSH_USERS_FILE:-}"
+
+        if [[ ! -r "${pw_list}" ]]; then
+          sf_warn "Password list missing: ${pw_list} (skipping Hydra/NetExec)."
+        elif [[ -n "${ssh_user}" || ( -n "${ssh_users_file}" && -r "${ssh_users_file}" ) ]]; then
+          if sf_tool hydra >/dev/null 2>&1; then
+            if [[ -n "${ssh_user}" ]]; then
+              sf_run 600 "${SECFORGE_SESSION_DIR}/passwords/hydra.txt" "$(sf_tool hydra)" -l "${ssh_user}" -P "${pw_list}" "${SECFORGE_TARGET_HOST}" ssh
+            else
+              sf_run 600 "${SECFORGE_SESSION_DIR}/passwords/hydra.txt" "$(sf_tool hydra)" -L "${ssh_users_file}" -P "${pw_list}" "${SECFORGE_TARGET_HOST}" ssh
+            fi
+          fi
+
+          if sf_tool nxc >/dev/null 2>&1; then
+            if [[ -n "${ssh_user}" ]]; then
+              sf_run 600 "${SECFORGE_SESSION_DIR}/passwords/netexec.txt" "$(sf_tool nxc)" ssh "${SECFORGE_TARGET_HOST}" -u "${ssh_user}" -p "${pw_list}"
+            else
+              sf_run 600 "${SECFORGE_SESSION_DIR}/passwords/netexec.txt" "$(sf_tool nxc)" ssh "${SECFORGE_TARGET_HOST}" -u "${ssh_users_file}" -p "${pw_list}"
+            fi
+          fi
+        else
+          sf_warn "Set SECFORGE_SSH_USER or SECFORGE_SSH_USERS_FILE to enable Hydra/NetExec (skipping)."
+        fi
       fi
     else
       sf_log "Tier 2 skipped."

@@ -232,10 +232,12 @@ main() {
     "${session_dir}/mobile" \
     "${session_dir}/compliance" \
     "${session_dir}/hardening" \
-    "${session_dir}/dependencies" \
-    "${session_dir}/emaildns" \
-    "${session_dir}/database" \
-    "${session_dir}/containers"
+	    "${session_dir}/dependencies" \
+	    "${session_dir}/emaildns" \
+	    "${session_dir}/database" \
+	    "${session_dir}/containers" \
+	    "${session_dir}/iac" \
+	    "${session_dir}/cloud"
 
   if [[ -d "${reports_root}" ]]; then
     (cd "${reports_root}" && ln -sfn "${session_id}" latest) >/dev/null 2>&1 || true

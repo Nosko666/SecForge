@@ -72,7 +72,28 @@ if command -v curl >/dev/null 2>&1; then
   fi
 fi
 
-python3 - <<PY
+ns_records=()
+while IFS= read -r ns; do
+  ns="${ns%.}"
+  [[ -n "${ns}" ]] && ns_records+=("${ns}")
+done < <(dig +short NS "${domain}" 2>/dev/null || true)
+
+zone_transfer_attempted="false"
+zone_transfer_allowed="false"
+zone_transfer_ns=""
+if [[ "${#ns_records[@]}" -gt 0 ]]; then
+  zone_transfer_attempted="true"
+  for ns in "${ns_records[@]}"; do
+    # Do not capture AXFR contents; only check for success via stats.
+    out="$(dig @"${ns}" "${domain}" AXFR +time=2 +tries=1 +noall +comments +stats 2>/dev/null || true)"
+    if grep -q "XFR size" <<<"${out}"; then
+      zone_transfer_allowed="true"
+      zone_transfer_ns="${ns}"
+      break
+    fi
+  done
+fi
+
 SF_NOW="${now}" \
 SF_DOMAIN="${domain}" \
 SF_SPF_TXT="${spf_txt}" \
@@ -87,12 +108,18 @@ SF_MTA_STS_TXT="${mta_sts_txt}" \
 SF_MTA_STS_POLICY_URL="${mta_sts_policy_url}" \
 SF_MTA_STS_POLICY_PRESENT="${mta_sts_policy_present}" \
 SF_TLS_RPT_TXT="${tls_rpt_txt}" \
+SF_NS_RECORDS="${ns_records[*]}" \
+SF_ZONE_TRANSFER_ATTEMPTED="${zone_transfer_attempted}" \
+SF_ZONE_TRANSFER_ALLOWED="${zone_transfer_allowed}" \
+SF_ZONE_TRANSFER_NS="${zone_transfer_ns}" \
 python3 - <<'PY'
 import json
 import os
 
+
 def split_words(s: str):
   return [x for x in (s or "").split() if x]
+
 
 spf_txt = os.environ.get("SF_SPF_TXT", "")
 dmarc_txt = os.environ.get("SF_DMARC_TXT", "")
@@ -132,7 +159,14 @@ data = {
       "present": bool(tls_rpt_txt),
       "record": tls_rpt_txt,
     },
+    "zone_transfer": {
+      "attempted": os.environ.get("SF_ZONE_TRANSFER_ATTEMPTED", "false") == "true",
+      "allowed": os.environ.get("SF_ZONE_TRANSFER_ALLOWED", "false") == "true",
+      "allowed_ns": os.environ.get("SF_ZONE_TRANSFER_NS", ""),
+      "ns_records": split_words(os.environ.get("SF_NS_RECORDS", "")),
+    },
   },
 }
+
 print(json.dumps(data, indent=2, sort_keys=True))
 PY
