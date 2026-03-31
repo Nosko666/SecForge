@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 . "${SCRIPT_DIR}/_lib.sh"
 
 SECFORGE_ROOT="${SECFORGE_ROOT:-/opt/secforge}"
+SECFORGE_VENV="${SECFORGE_VENV:-${SECFORGE_ROOT}/venv}"
 
 cfg_file="${SECFORGE_ROOT}/config/secforge.conf"
 
@@ -27,6 +28,7 @@ main() {
   sf_cfg_add_list_item "${cfg_file}" "INSTALLED_CATEGORIES" "compliance"
 
   mkdir -p "${SECFORGE_ROOT}/tools" "${SECFORGE_ROOT}/bin"
+  sf_ensure_venv "${SECFORGE_VENV}"
 
   # Lynis (git clone)
   sf_git_clone_or_update "https://github.com/CISOfy/lynis.git" "${SECFORGE_ROOT}/tools/lynis"
@@ -43,7 +45,19 @@ main() {
   else
     sf_warn "oscap not found after install; OpenSCAP checks may be unavailable."
   fi
+
+  # Stripe/payment checker (SecForge script; runs inside venv)
+  sf_install_venv_packages "${SECFORGE_VENV}" requests beautifulsoup4 || sf_warn "Failed to install stripe-check dependencies (requests, beautifulsoup4)"
+  if [[ -r "${SECFORGE_ROOT}/scripts/stripe-check.py" ]]; then
+    cat >"${SECFORGE_ROOT}/bin/stripe-check" <<EOF
+#!/usr/bin/env bash
+exec "${SECFORGE_VENV}/bin/python" "${SECFORGE_ROOT}/scripts/stripe-check.py" "\$@"
+EOF
+    chmod 0755 "${SECFORGE_ROOT}/bin/stripe-check"
+    mark_tool_if_present "stripe-check" "${SECFORGE_ROOT}/bin/stripe-check"
+  else
+    sf_warn "Missing ${SECFORGE_ROOT}/scripts/stripe-check.py; stripe-check will be unavailable."
+  fi
 }
 
 main "$@"
-

@@ -179,7 +179,7 @@ Notes:
 |------|---------|--------|
 | Lynis (PCI mode) | `lynis audit system --test-from-group PCI` | text |
 | OpenSCAP | `oscap xccdf eval --profile pci-dss --results /opt/secforge/reports/SESSION/compliance/openscap.xml --report /opt/secforge/reports/SESSION/compliance/openscap.html DATASTREAM` | XML/HTML |
-| Stripe Check | `python3 /opt/secforge/scripts/stripe-check.py TARGET` | JSON |
+| Stripe Check | `stripe-check TARGET > /opt/secforge/reports/SESSION/compliance/stripe-check.json` | JSON |
 
 ### Category 9: Server Hardening (audit + optional fixes)
 | Tool | Command | Output |

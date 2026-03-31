@@ -333,6 +333,17 @@ main() {
       fi
     done
 
+    # stripe-check dependencies live in the venv as well.
+    if sf_is_installed_tool "${installed_tools}" "stripe-check" || [[ -x "${SECFORGE_ROOT}/bin/stripe-check" ]]; then
+      local spkg
+      for spkg in requests beautifulsoup4; do
+        before="$("${SECFORGE_VENV}/bin/pip" show "${spkg}" 2>/dev/null | awk -F': ' '$1=="Version"{print $2; exit}' || true)"
+        sf_step "Updating pip package ${spkg} (venv)" "${SECFORGE_VENV}/bin/pip" install --upgrade "${spkg}"
+        after="$("${SECFORGE_VENV}/bin/pip" show "${spkg}" 2>/dev/null | awk -F': ' '$1=="Version"{print $2; exit}' || true)"
+        sf_log "  - ${spkg}: ${before:-unknown} -> ${after:-unknown}"
+      done
+    fi
+
     # NetExec is installed editable from a git clone (best-effort).
     if sf_cfg_list_has "${installed_tools}" "netexec" || [[ -x "${SECFORGE_ROOT}/bin/nxc" ]]; then
       sf_step "Refreshing NetExec editable install (venv)" update_netexec_editable

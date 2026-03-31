@@ -601,6 +601,203 @@ def parse_mysql(path: Path) -> List[Finding]:
     return findings
 
 
+def parse_stripe_check(path: Path, target_url: str) -> List[Finding]:
+    data = load_json_file(path)
+    if not isinstance(data, dict):
+        return []
+
+    findings: List[Finding] = []
+
+    status = str(data.get("status") or "ok").lower()
+    errors = data.get("errors")
+    if status != "ok":
+        ev = ""
+        if isinstance(errors, list) and errors:
+            ev = truncate("; ".join([str(x) for x in errors[:5]]), 400)
+        findings.append(
+            Finding(
+                severity="INFO",
+                tool="stripe-check",
+                category="payment",
+                title="Stripe/payment check did not run successfully",
+                url=target_url or str(data.get("normalized_target") or ""),
+                description="The stripe-check script returned an error status. Install the compliance category and re-run.",
+                evidence=ev,
+                remediation="Run /opt/secforge/scripts/install-compliance.sh and re-run stripe-check on your payment pages.",
+            )
+        )
+        return findings
+
+    checks = data.get("checks", {}) if isinstance(data.get("checks", {}), dict) else {}
+    url_base = target_url or str(data.get("normalized_target") or "")
+
+    def check_obj(name: str) -> Dict[str, Any]:
+        v = checks.get(name, {})
+        return v if isinstance(v, dict) else {}
+
+    def check_failed(name: str) -> bool:
+        c = check_obj(name)
+        return c.get("pass") is False
+
+    def evidence_str(name: str, keys: List[str]) -> str:
+        c = check_obj(name)
+        ev = c.get("evidence", {})
+        if not isinstance(ev, dict):
+            return ""
+        parts: List[str] = []
+        for k in keys:
+            v = ev.get(k)
+            if v is None:
+                continue
+            if isinstance(v, list):
+                parts.append(f"{k}=" + ", ".join([str(x) for x in v[:10]]))
+            else:
+                parts.append(f"{k}=" + truncate(str(v), 300))
+        return truncate("; ".join(parts), 500)
+
+    if check_failed("https_enforced"):
+        findings.append(
+            Finding(
+                severity="HIGH",
+                tool="stripe-check",
+                category="payment",
+                title="HTTPS not enforced for payment pages",
+                url=url_base,
+                description="Payment pages should be HTTPS-only to prevent credential/card data exposure and downgrade attacks.",
+                evidence=evidence_str("https_enforced", ["non_https_pages", "http_probe"]),
+                remediation="Force HTTP→HTTPS redirects and enable HSTS. Ensure all payment pages are only reachable over HTTPS.",
+            )
+        )
+
+    if check_failed("mixed_content"):
+        findings.append(
+            Finding(
+                severity="HIGH",
+                tool="stripe-check",
+                category="payment",
+                title="Mixed content on payment pages",
+                url=url_base,
+                description="Loading HTTP resources on HTTPS payment pages can allow content injection and data skimming.",
+                evidence=evidence_str("mixed_content", ["http_urls"]),
+                remediation="Ensure all scripts/assets are loaded over HTTPS and remove any http:// references.",
+            )
+        )
+
+    if check_failed("stripe_js_official_only"):
+        findings.append(
+            Finding(
+                severity="HIGH",
+                tool="stripe-check",
+                category="payment",
+                title="Stripe.js loaded from non-official source",
+                url=url_base,
+                description="Stripe.js should only be loaded from https://js.stripe.com to avoid tampering and skimming risk.",
+                evidence=evidence_str("stripe_js_official_only", ["suspect_srcs"]),
+                remediation="Remove any non-official Stripe.js copies and load Stripe.js only from https://js.stripe.com/v3/.",
+            )
+        )
+
+    if check_failed("raw_card_fields"):
+        findings.append(
+            Finding(
+                severity="CRITICAL",
+                tool="stripe-check",
+                category="payment",
+                title="Raw card input fields detected in HTML",
+                url=url_base,
+                description="Collecting raw card data in your HTML increases PCI scope and skimming risk. Prefer Stripe Elements or Checkout.",
+                evidence=evidence_str("raw_card_fields", ["fields"]),
+                remediation="Use Stripe Checkout or Stripe Elements (hosted iframes) and remove raw card number/CVC inputs from your forms.",
+            )
+        )
+
+    if check_failed("csp_present"):
+        findings.append(
+            Finding(
+                severity="HIGH",
+                tool="stripe-check",
+                category="payment",
+                title="Missing Content-Security-Policy on payment pages",
+                url=url_base,
+                description="A CSP reduces XSS risk and makes script injection (including skimmers) harder on payment pages.",
+                evidence=evidence_str("csp_present", ["missing_on_pages"]),
+                remediation="Add a strict Content-Security-Policy header. Start with default-src 'self' and use nonces/hashes instead of unsafe-inline.",
+            )
+        )
+
+    if check_failed("csp_blocks_unsafe_inline"):
+        findings.append(
+            Finding(
+                severity="HIGH",
+                tool="stripe-check",
+                category="payment",
+                title="CSP allows unsafe-inline scripts on payment pages",
+                url=url_base,
+                description="Allowing unsafe-inline makes XSS and script injection easier, increasing payment skimmer risk.",
+                evidence=evidence_str("csp_blocks_unsafe_inline", ["unsafe_inline_on_pages"]),
+                remediation="Remove 'unsafe-inline' from script-src and use nonces/hashes for required inline scripts.",
+            )
+        )
+
+    if check_failed("no_card_number_patterns"):
+        findings.append(
+            Finding(
+                severity="CRITICAL",
+                tool="stripe-check",
+                category="payment",
+                title="Possible credit card numbers detected in page source",
+                url=url_base,
+                description="Card-like number patterns in page source can indicate accidental exposure or unsafe handling.",
+                evidence=evidence_str("no_card_number_patterns", ["masked_hits"]),
+                remediation="Ensure card numbers are never rendered or stored client-side. Use Stripe Elements/Checkout and remove any debug/test card numbers.",
+            )
+        )
+
+    if check_failed("sri_on_external_scripts"):
+        findings.append(
+            Finding(
+                severity="MEDIUM",
+                tool="stripe-check",
+                category="payment",
+                title="External scripts missing Subresource Integrity (SRI)",
+                url=url_base,
+                description="SRI helps prevent tampering of third-party scripts loaded on payment pages.",
+                evidence=evidence_str("sri_on_external_scripts", ["missing_integrity_srcs"]),
+                remediation="Add integrity=... (and crossorigin where needed) to third-party script tags, or remove/replace them on payment pages.",
+            )
+        )
+
+    if check_failed("clickjacking_protection"):
+        findings.append(
+            Finding(
+                severity="MEDIUM",
+                tool="stripe-check",
+                category="payment",
+                title="Missing clickjacking protection on payment pages",
+                url=url_base,
+                description="Payment pages should not be frameable by untrusted origins (clickjacking risk).",
+                evidence=evidence_str("clickjacking_protection", ["missing_on_pages"]),
+                remediation="Set X-Frame-Options: DENY or SAMEORIGIN and/or CSP frame-ancestors 'none'/'self' on payment pages.",
+            )
+        )
+
+    if check_failed("no_third_party_scripts_on_payment_pages"):
+        findings.append(
+            Finding(
+                severity="MEDIUM",
+                tool="stripe-check",
+                category="payment",
+                title="Third-party scripts detected on payment pages",
+                url=url_base,
+                description="Third-party scripts on checkout pages increase the risk of card skimming and supply chain compromise.",
+                evidence=evidence_str("no_third_party_scripts_on_payment_pages", ["third_party_script_hosts"]),
+                remediation="Remove non-essential third-party scripts from checkout pages. Keep only first-party scripts and Stripe.",
+            )
+        )
+
+    return findings
+
+
 def parse_nuclei(path: Path) -> List[Finding]:
     findings: List[Finding] = []
     max_items = int(os.environ.get("SECFORGE_MAX_FINDINGS_NUCLEI", "2000"))
@@ -1648,6 +1845,8 @@ def collect_tools_and_findings(session_dir: Path) -> Tuple[Set[str], List[Findin
                 add("check-email-dns", parse_emaildns(fpath, target_host))
             elif rel == "database/mysql.json":
                 add("check-mysql", parse_mysql(fpath))
+            elif rel == "compliance/stripe-check.json":
+                add("stripe-check", parse_stripe_check(fpath, target_url))
             elif rel == "webapp/nuclei.json":
                 add("nuclei", parse_nuclei(fpath))
             elif rel == "webapp/zap.json":
@@ -1816,4 +2015,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
