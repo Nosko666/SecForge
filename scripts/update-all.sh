@@ -351,6 +351,9 @@ main() {
   fi
 
   # 6) Update GitHub-release binaries (only those installed).
+  if ! command -v jq >/dev/null 2>&1; then
+    sf_warn "jq not found; skipping GitHub release binary updates."
+  else
   declare -A gh_repo=(
     ["nuclei"]="projectdiscovery/nuclei"
     ["ffuf"]="ffuf/ffuf"
@@ -391,6 +394,7 @@ main() {
       sf_log "${tool}: ${before:-unknown} -> ${after:-unknown}"
     fi
   done
+  fi
 
   # 7) Special-case updates (ZAP tarball, APKHunt rebuild).
   if [[ -x "${SECFORGE_ROOT}/bin/zap.sh" ]]; then
@@ -424,4 +428,3 @@ main() {
 }
 
 main "$@"
-
