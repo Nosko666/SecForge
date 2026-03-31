@@ -139,7 +139,7 @@ EOF
 
   sf_git_clone_or_update "https://github.com/chenjj/CORScanner.git" "${SECFORGE_ROOT}/tools/corscanner"
   local cors_entry
-  cors_entry="$(find "${SECFORGE_ROOT}/tools/corscanner" -maxdepth 2 -type f \\( -iname '*cors*scanner*.py' -o -iname 'corscanner.py' -o -iname 'cors_scan.py' \\) 2>/dev/null | head -n1 || true)"
+  cors_entry="$(find "${SECFORGE_ROOT}/tools/corscanner" -maxdepth 2 -type f \( -iname '*cors*scanner*.py' -o -iname 'corscanner.py' -o -iname 'cors_scan.py' \) 2>/dev/null | head -n1 || true)"
   if [[ -n "${cors_entry}" ]]; then
     cat >"${SECFORGE_ROOT}/bin/corscanner" <<EOF
 #!/usr/bin/env bash
