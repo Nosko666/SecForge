@@ -256,7 +256,10 @@ sf_zap_active_scan() {
     ZAP_STARTED="0"
   else
     sf_log "Starting ZAP daemon..."
-    "${zap_bin}" -daemon -host 127.0.0.1 -port 8080 -config api.disablekey=true >>"${log_path}" 2>&1 &
+    "${zap_bin}" -daemon -host 127.0.0.1 -port 8080 \
+      -config api.disablekey=true \
+      -config api.addrs.addr.name=127.0.0.1 \
+      -config api.addrs.addr.regex=false >>"${log_path}" 2>&1 &
     ZAP_PID=$!
     ZAP_STARTED="1"
 
