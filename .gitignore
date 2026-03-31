@@ -18,3 +18,7 @@ bin/*
 *.swp
 *.swo
 *.tmp
+
+# Python noise
+__pycache__/
+*.pyc
