@@ -7,10 +7,10 @@ now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 mysql_bin="${MYSQL_BIN:-mysql}"
 if ! command -v "${mysql_bin}" >/dev/null 2>&1; then
-  python3 - <<PY
-import json
+  SF_NOW="${now}" python3 - <<'PY'
+import json, os
 print(json.dumps({
-  "timestamp_utc": ${now!r},
+  "timestamp_utc": os.environ.get("SF_NOW", ""),
   "status": "error",
   "error": "mysql client not found",
   "hint": "Install default-mysql-client (SecForge Category 13).",
@@ -49,10 +49,10 @@ mysql_query() {
 
 conn_test="$(mysql_query "SELECT 1;")"
 if [[ "${conn_test}" != "1" ]]; then
-  python3 - <<PY
-import json
+  SF_NOW="${now}" python3 - <<'PY'
+import json, os
 print(json.dumps({
-  "timestamp_utc": ${now!r},
+  "timestamp_utc": os.environ.get("SF_NOW", ""),
   "status": "error",
   "error": "could not connect to MySQL with current credentials/method",
   "hints": [
@@ -107,8 +107,17 @@ elif has_table "global_grants"; then
   super_non_root_count="$(mysql_query "SELECT COUNT(*) FROM mysql.global_grants WHERE USER<>'root' AND PRIV IN ('SUPER','SYSTEM_USER');" | head -n1 || true)"
 fi
 
-python3 - <<PY
+SF_NOW="${now}" \
+SF_VERSION="${version}" \
+SF_ANON="${anonymous_count}" \
+SF_REMOTE_ROOT="${remote_root_count}" \
+SF_NO_PASS="${users_no_pass_count}" \
+SF_TEST_DB="${test_db_count}" \
+SF_RST="${require_secure_transport_val}" \
+SF_SUPER_NON_ROOT="${super_non_root_count}" \
+python3 - <<'PY'
 import json
+import os
 
 def to_int_or_none(v):
   try:
@@ -116,17 +125,19 @@ def to_int_or_none(v):
   except Exception:
     return None
 
+rst = os.environ.get("SF_RST", "")
+
 data = {
-  "timestamp_utc": ${now!r},
+  "timestamp_utc": os.environ.get("SF_NOW", ""),
   "status": "ok",
-  "mysql_version": ${version!r},
+  "mysql_version": os.environ.get("SF_VERSION", ""),
   "checks": {
-    "anonymous_accounts_count": to_int_or_none(${anonymous_count!r}),
-    "remote_root_accounts_count": to_int_or_none(${remote_root_count!r}),
-    "users_without_password_count": to_int_or_none(${users_no_pass_count!r}),
-    "test_databases_count": to_int_or_none(${test_db_count!r}),
-    "require_secure_transport": ${require_secure_transport_val!r} or None,
-    "non_root_super_priv_count": to_int_or_none(${super_non_root_count!r}),
+    "anonymous_accounts_count": to_int_or_none(os.environ.get("SF_ANON", "")),
+    "remote_root_accounts_count": to_int_or_none(os.environ.get("SF_REMOTE_ROOT", "")),
+    "users_without_password_count": to_int_or_none(os.environ.get("SF_NO_PASS", "")),
+    "test_databases_count": to_int_or_none(os.environ.get("SF_TEST_DB", "")),
+    "require_secure_transport": rst or None,
+    "non_root_super_priv_count": to_int_or_none(os.environ.get("SF_SUPER_NON_ROOT", "")),
   },
   "notes": [
     "This script does not output password hashes or sensitive table data.",
@@ -136,4 +147,3 @@ data = {
 
 print(json.dumps(data, indent=2, sort_keys=True))
 PY
-

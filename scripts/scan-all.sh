@@ -93,25 +93,46 @@ sf_builtin_web_checks() {
   cookies_missing_httponly="$(grep -i '^set-cookie:' <<<"${headers}" | grep -vic ';\s*httponly' || true)"
   cookies_missing_samesite="$(grep -i '^set-cookie:' <<<"${headers}" | grep -vic ';\s*samesite=' || true)"
 
-  python3 - <<PY
+  SF_GIT_HEAD_CODE="${git_head_code}" \
+  SF_ENV_CODE="${env_code}" \
+  SF_TRACE_CODE="${trace_code}" \
+  SF_PUT_CODE="${put_code}" \
+  SF_DELETE_CODE="${delete_code}" \
+  SF_COOKIES_TOTAL="${cookies_total}" \
+  SF_COOKIES_NO_SECURE="${cookies_missing_secure}" \
+  SF_COOKIES_NO_HTTPONLY="${cookies_missing_httponly}" \
+  SF_COOKIES_NO_SAMESITE="${cookies_missing_samesite}" \
+  SF_OUT_JSON="${out_json}" \
+  python3 - <<'PY'
 import json
+import os
+
+def int_or_zero(s):
+  try:
+    return int(s)
+  except Exception:
+    return 0
+
 data = {
-  "git_head_http_code": ${git_head_code!r},
-  "env_http_code": ${env_code!r},
+  "git_head_http_code": os.environ.get("SF_GIT_HEAD_CODE", "000"),
+  "env_http_code": os.environ.get("SF_ENV_CODE", "000"),
   "http_methods": {
-    "trace_http_code": ${trace_code!r},
-    "put_http_code": ${put_code!r},
-    "delete_http_code": ${delete_code!r},
+    "trace_http_code": os.environ.get("SF_TRACE_CODE", "000"),
+    "put_http_code": os.environ.get("SF_PUT_CODE", "000"),
+    "delete_http_code": os.environ.get("SF_DELETE_CODE", "000"),
   },
   "cookies": {
-    "set_cookie_headers": int(${cookies_total!r}),
-    "missing_secure": int(${cookies_missing_secure!r}),
-    "missing_httponly": int(${cookies_missing_httponly!r}),
-    "missing_samesite": int(${cookies_missing_samesite!r}),
+    "set_cookie_headers": int_or_zero(os.environ.get("SF_COOKIES_TOTAL", "0")),
+    "missing_secure": int_or_zero(os.environ.get("SF_COOKIES_NO_SECURE", "0")),
+    "missing_httponly": int_or_zero(os.environ.get("SF_COOKIES_NO_HTTPONLY", "0")),
+    "missing_samesite": int_or_zero(os.environ.get("SF_COOKIES_NO_SAMESITE", "0")),
   },
 }
-with open(${out_json!r}, "w", encoding="utf-8") as f:
-  json.dump(data, f, indent=2, sort_keys=True)
+
+out_path = os.environ.get("SF_OUT_JSON", "")
+if out_path:
+  with open(out_path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2, sort_keys=True)
 PY
 }
 

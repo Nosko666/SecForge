@@ -250,31 +250,58 @@ main() {
   # Save a machine-readable snapshot.
   local now
   now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  python3 - <<PY
-import json, os
+  SF_NOW="${now}" \
+  SF_TARGET_INPUT="${target}" \
+  SF_TARGET_KIND="${kind}" \
+  SF_TARGET_URL="${base_url}" \
+  SF_TARGET_FULL_URL="${url}" \
+  SF_TARGET_HOST="${host}" \
+  SF_TARGET_PORT="${port}" \
+  SF_PROFILE="${profile}" \
+  SF_HTTP_CODE="${http_code}" \
+  SF_LATENCY_SECONDS="${latency_s}" \
+  SF_SCAN_DELAY_MS="${scan_delay_ms}" \
+  SF_MAX_CONCURRENT="${max_concurrent}" \
+  SF_CB_THRESHOLD="${threshold}" \
+  SF_CB_COOLDOWN="${cooldown}" \
+  SF_MISSING_TOOLS="${missing_tools}" \
+  SF_PREFLIGHT_PATH="${session_dir}/preflight.json" \
+  python3 - <<'PY'
+import json
+import os
+
+def int_or_none(s):
+  try:
+    return int(s)
+  except Exception:
+    return None
+
 data = {
-  "timestamp_utc": ${now!r},
-  "target_input": ${target!r},
-  "target_kind": ${kind!r},
-  "target_url": ${base_url!r},
-  "target_full_url": ${url!r},
-  "target_host": ${host!r},
-  "target_port": ${port!r},
-  "profile": ${profile!r},
+  "timestamp_utc": os.environ.get("SF_NOW", ""),
+  "target_input": os.environ.get("SF_TARGET_INPUT", ""),
+  "target_kind": os.environ.get("SF_TARGET_KIND", ""),
+  "target_url": os.environ.get("SF_TARGET_URL", ""),
+  "target_full_url": os.environ.get("SF_TARGET_FULL_URL", ""),
+  "target_host": os.environ.get("SF_TARGET_HOST", ""),
+  "target_port": os.environ.get("SF_TARGET_PORT", ""),
+  "profile": os.environ.get("SF_PROFILE", ""),
   "baseline": {
-    "http_code": ${http_code!r},
-    "latency_seconds": ${latency_s!r},
+    "http_code": os.environ.get("SF_HTTP_CODE", ""),
+    "latency_seconds": os.environ.get("SF_LATENCY_SECONDS", ""),
   },
   "config": {
-    "scan_delay_ms": int(${scan_delay_ms!r}),
-    "max_concurrent_tools": int(${max_concurrent!r}),
-    "circuit_breaker_threshold_seconds": int(${threshold!r}),
-    "circuit_breaker_cooldown_seconds": int(${cooldown!r}),
+    "scan_delay_ms": int_or_none(os.environ.get("SF_SCAN_DELAY_MS", "")),
+    "max_concurrent_tools": int_or_none(os.environ.get("SF_MAX_CONCURRENT", "")),
+    "circuit_breaker_threshold_seconds": int_or_none(os.environ.get("SF_CB_THRESHOLD", "")),
+    "circuit_breaker_cooldown_seconds": int_or_none(os.environ.get("SF_CB_COOLDOWN", "")),
   },
-  "missing_required_tools": [t for t in ${missing_tools!r}.split() if t],
+  "missing_required_tools": [t for t in os.environ.get("SF_MISSING_TOOLS", "").split() if t],
 }
-with open(${(session_dir + "/preflight.json")!r}, "w", encoding="utf-8") as f:
-  json.dump(data, f, indent=2, sort_keys=True)
+
+out_path = os.environ.get("SF_PREFLIGHT_PATH", "")
+if out_path:
+  with open(out_path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2, sort_keys=True)
 PY
 
   # Exports for callers (stdout only).

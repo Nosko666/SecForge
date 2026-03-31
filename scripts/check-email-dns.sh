@@ -73,43 +73,66 @@ if command -v curl >/dev/null 2>&1; then
 fi
 
 python3 - <<PY
+SF_NOW="${now}" \
+SF_DOMAIN="${domain}" \
+SF_SPF_TXT="${spf_txt}" \
+SF_SPF_ALL="${spf_all}" \
+SF_DMARC_TXT="${dmarc_txt}" \
+SF_DMARC_POLICY="${dmarc_policy}" \
+SF_DKIM_SELECTORS_CHECKED="${common_selectors[*]}" \
+SF_DKIM_SELECTORS_FOUND="${dkim_selectors_found[*]}" \
+SF_DNSSEC_ENABLED="${dnssec_enabled}" \
+SF_MTA_STS_TXT_PRESENT="${mta_sts_txt_present}" \
+SF_MTA_STS_TXT="${mta_sts_txt}" \
+SF_MTA_STS_POLICY_URL="${mta_sts_policy_url}" \
+SF_MTA_STS_POLICY_PRESENT="${mta_sts_policy_present}" \
+SF_TLS_RPT_TXT="${tls_rpt_txt}" \
+python3 - <<'PY'
 import json
+import os
+
+def split_words(s: str):
+  return [x for x in (s or "").split() if x]
+
+spf_txt = os.environ.get("SF_SPF_TXT", "")
+dmarc_txt = os.environ.get("SF_DMARC_TXT", "")
+tls_rpt_txt = os.environ.get("SF_TLS_RPT_TXT", "")
+
 data = {
-  "timestamp_utc": ${now!r},
-  "domain": ${domain!r},
+  "timestamp_utc": os.environ.get("SF_NOW", ""),
+  "domain": os.environ.get("SF_DOMAIN", ""),
   "checks": {
     "spf": {
-      "present": bool(${spf_txt!r}),
-      "record": ${spf_txt!r},
-      "all_mechanism": ${spf_all!r},
+      "present": bool(spf_txt),
+      "record": spf_txt,
+      "all_mechanism": os.environ.get("SF_SPF_ALL", "unknown"),
       "recommended": "-all",
     },
     "dmarc": {
-      "present": bool(${dmarc_txt!r}),
-      "record": ${dmarc_txt!r},
-      "policy": ${dmarc_policy!r},
+      "present": bool(dmarc_txt),
+      "record": dmarc_txt,
+      "policy": os.environ.get("SF_DMARC_POLICY", "unknown"),
       "recommended": "reject",
     },
     "dkim": {
-      "selectors_checked": ${common_selectors!r},
-      "selectors_found": ${dkim_selectors_found!r},
-      "present": len(${dkim_selectors_found!r}) > 0,
+      "selectors_checked": split_words(os.environ.get("SF_DKIM_SELECTORS_CHECKED", "")),
+      "selectors_found": split_words(os.environ.get("SF_DKIM_SELECTORS_FOUND", "")),
+      "present": len(split_words(os.environ.get("SF_DKIM_SELECTORS_FOUND", ""))) > 0,
     },
     "dnssec": {
-      "enabled": ${dnssec_enabled!r},
+      "enabled": os.environ.get("SF_DNSSEC_ENABLED", "unknown"),
     },
     "mta_sts": {
-      "txt_present": ${mta_sts_txt_present!r} == "true",
-      "txt_record": ${mta_sts_txt!r},
-      "policy_url": ${mta_sts_policy_url!r},
-      "policy_present": ${mta_sts_policy_present!r} == "true",
+      "txt_present": os.environ.get("SF_MTA_STS_TXT_PRESENT", "false") == "true",
+      "txt_record": os.environ.get("SF_MTA_STS_TXT", ""),
+      "policy_url": os.environ.get("SF_MTA_STS_POLICY_URL", ""),
+      "policy_present": os.environ.get("SF_MTA_STS_POLICY_PRESENT", "false") == "true",
     },
     "tls_rpt": {
-      "present": bool(${tls_rpt_txt!r}),
-      "record": ${tls_rpt_txt!r},
+      "present": bool(tls_rpt_txt),
+      "record": tls_rpt_txt,
     },
   },
 }
 print(json.dumps(data, indent=2, sort_keys=True))
 PY
-

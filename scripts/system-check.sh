@@ -142,47 +142,78 @@ main() {
     can_write_reports="true"
   fi
 
-  python3 - <<PY
+  SF_NOW="${now}" \
+  SF_ROOT="${SECFORGE_ROOT}" \
+  SF_CONFIG_FILE="${SECFORGE_CONFIG_FILE}" \
+  SF_GIT_REV="${git_rev}" \
+  SF_OS_PRETTY="${os_pretty}" \
+  SF_OS_ID="${os_id}" \
+  SF_OS_VERSION_ID="${os_version}" \
+  SF_KERNEL="${kernel}" \
+  SF_ARCH_RAW="${arch_raw}" \
+  SF_ARCH_NORM="${arch_norm}" \
+  SF_PYTHON_VER="${python_ver}" \
+  SF_PYTHON_MM="${python_mm}" \
+  SF_NODE_VER="${node_ver}" \
+  SF_NPM_VER="${npm_ver}" \
+  SF_DOCKER_VER="${docker_ver}" \
+  SF_DOCKER_ACCESS="${docker_access}" \
+  SF_GO_VER="${go_ver}" \
+  SF_MEM_TOTAL="${mem_total}" \
+  SF_MEM_AVAIL="${mem_avail}" \
+  SF_DISK_TOTAL="${disk_total}" \
+  SF_DISK_AVAIL="${disk_avail}" \
+  SF_IN_GROUP="${in_group}" \
+  SF_CAN_WRITE_REPORTS="${can_write_reports}" \
+  SF_CATEGORIES="${cfg_categories}" \
+  SF_TOOLS="${cfg_tools}" \
+  python3 - <<'PY'
 import json
+import os
 
-now = ${now!r}
+def int_or_none(s: str):
+  try:
+    return int(s)
+  except Exception:
+    return None
+
 data = {
-  "timestamp_utc": now,
-  "secforge_root": ${SECFORGE_ROOT!r},
-  "secforge_config_file": ${SECFORGE_CONFIG_FILE!r},
-  "git_rev": ${git_rev!r},
+  "timestamp_utc": os.environ.get("SF_NOW", ""),
+  "secforge_root": os.environ.get("SF_ROOT", ""),
+  "secforge_config_file": os.environ.get("SF_CONFIG_FILE", ""),
+  "git_rev": os.environ.get("SF_GIT_REV", ""),
   "os": {
-    "pretty_name": ${os_pretty!r},
-    "id": ${os_id!r},
-    "version_id": ${os_version!r},
-    "kernel": ${kernel!r},
+    "pretty_name": os.environ.get("SF_OS_PRETTY", ""),
+    "id": os.environ.get("SF_OS_ID", ""),
+    "version_id": os.environ.get("SF_OS_VERSION_ID", ""),
+    "kernel": os.environ.get("SF_KERNEL", ""),
   },
   "arch": {
-    "raw": ${arch_raw!r},
-    "normalized": ${arch_norm!r},
+    "raw": os.environ.get("SF_ARCH_RAW", ""),
+    "normalized": os.environ.get("SF_ARCH_NORM", ""),
   },
   "versions": {
-    "python3": ${python_ver!r},
-    "python3_major_minor": ${python_mm!r},
-    "node": ${node_ver!r},
-    "npm": ${npm_ver!r},
-    "docker": ${docker_ver!r},
-    "docker_access": ${docker_access!r},
-    "go": ${go_ver!r},
+    "python3": os.environ.get("SF_PYTHON_VER", ""),
+    "python3_major_minor": os.environ.get("SF_PYTHON_MM", ""),
+    "node": os.environ.get("SF_NODE_VER", ""),
+    "npm": os.environ.get("SF_NPM_VER", ""),
+    "docker": os.environ.get("SF_DOCKER_VER", ""),
+    "docker_access": os.environ.get("SF_DOCKER_ACCESS", "unknown"),
+    "go": os.environ.get("SF_GO_VER", ""),
   },
   "resources": {
-    "mem_total_bytes": int(${mem_total!r}) if ${mem_total != ""!r} else None,
-    "mem_available_bytes": int(${mem_avail!r}) if ${mem_avail != ""!r} else None,
-    "disk_total_bytes": int(${disk_total!r}) if ${disk_total != ""!r} else None,
-    "disk_available_bytes": int(${disk_avail!r}) if ${disk_avail != ""!r} else None,
+    "mem_total_bytes": int_or_none(os.environ.get("SF_MEM_TOTAL", "")),
+    "mem_available_bytes": int_or_none(os.environ.get("SF_MEM_AVAIL", "")),
+    "disk_total_bytes": int_or_none(os.environ.get("SF_DISK_TOTAL", "")),
+    "disk_available_bytes": int_or_none(os.environ.get("SF_DISK_AVAIL", "")),
   },
   "permissions": {
-    "in_secforge_group": ${in_group == "true"!r},
-    "can_write_reports": ${can_write_reports == "true"!r},
+    "in_secforge_group": os.environ.get("SF_IN_GROUP", "false") == "true",
+    "can_write_reports": os.environ.get("SF_CAN_WRITE_REPORTS", "false") == "true",
   },
   "installed": {
-    "categories": [c for c in ${cfg_categories!r}.split() if c],
-    "tools": [t for t in ${cfg_tools!r}.split() if t],
+    "categories": [c for c in os.environ.get("SF_CATEGORIES", "").split() if c],
+    "tools": [t for t in os.environ.get("SF_TOOLS", "").split() if t],
   },
 }
 print(json.dumps(data, indent=2, sort_keys=True))
