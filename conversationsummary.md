@@ -91,7 +91,7 @@ Each tool updates differently:
 - pip tools: `pip install --upgrade`
 - Go tools: `go install ...@latest`
 - git clone tools: `cd tool && git pull`
-- Nuclei templates: `nuclei -update-templates` (updates frequently, should run on every update cycle)
+- Nuclei templates: git clone at `/opt/secforge/tools/nuclei-templates` (updated via `tools/*` git-pull loop in update-all.sh; scans pass `-t /opt/secforge/tools/nuclei-templates`)
 - ClamAV signatures: `freshclam`
 - rkhunter definitions: `rkhunter --update`
 

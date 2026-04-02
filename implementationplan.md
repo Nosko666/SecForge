@@ -655,7 +655,7 @@ This script should:
 - pip install --upgrade for pip tools
 - Re-download latest GitHub release binaries for tools installed into `/opt/secforge/bin/`
 - git pull for git-cloned tools
-- nuclei -update-templates for Nuclei templates
+- Nuclei templates are updated via the `tools/*` git-pull loop (`/opt/secforge/tools/nuclei-templates`); no separate `nuclei -update-templates` step
 - freshclam for ClamAV signatures
 - rkhunter --update for rootkit definitions
 - Print a summary of what was updated
@@ -786,7 +786,7 @@ Download a small curated subset from SecLists (not the full 4.5GB):
    - Initialize `etckeeper` (track `/etc` changes) and commit a baseline snapshot
    - Initialize AIDE database (aide --init)
    - Initialize ClamAV database (freshclam)
-   - Update Nuclei templates (nuclei -update-templates)
+   - Clone Nuclei templates repo into `/opt/secforge/tools/nuclei-templates` (scan scripts pass `-t` to this directory; updates via `tools/*` git-pull loop)
    - Create `/opt/secforge/config/secforge.conf` from `config/secforge.conf.example` if missing (never overwrite existing config)
    - Write installed tool list/categories to `/opt/secforge/config/secforge.conf`
    - Copy CLAUDE.md to /opt/secforge/CLAUDE.md
@@ -832,9 +832,9 @@ Build a bash script that:
    - venv tools: `pip install -U ...` inside `/opt/secforge/venv/`
    - git-cloned tools: `git pull` in each `/opt/secforge/tools/*`
    - binary tools in `/opt/secforge/bin/`: re-download latest GitHub releases
-   - signatures/templates: `nuclei -update-templates`, `freshclam`, `rkhunter --update`
+   - signatures/templates: `freshclam`, `rkhunter --update` (Nuclei templates updated via `tools/*` git-pull loop)
 3. Shows a before/after version comparison
-4. Logs everything to /opt/secforge/reports/updates.log
+4. Logs everything to /opt/secforge/logs/updates.log (root-only; prevents symlink attacks in group-writable reports/)
 
 ## The Stripe/Payment Check Script (stripe-check.py)
 
