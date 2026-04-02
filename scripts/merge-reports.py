@@ -1467,13 +1467,51 @@ def parse_httpx_jsonl(path: Path, target_host: str) -> List[Finding]:
     ]
 
 
+def parse_wafw00f_json(path: Path, target_url: str) -> List[Finding]:
+    """Parse wafw00f JSON output (list of objects with 'url', 'detected', 'firewall', etc.)."""
+    data = load_json_file(path)
+    if data is None:
+        # Fall back to text parsing if JSON is invalid.
+        return parse_wafw00f_text(path, target_url)
+    items = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+    if not items:
+        return parse_wafw00f_text(path, target_url)
+    findings: List[Finding] = []
+    for item in items[:50]:
+        if not isinstance(item, dict):
+            continue
+        detected = item.get("detected") or item.get("Detected") or False
+        firewall = str(item.get("firewall") or item.get("Firewall") or item.get("waf") or "")
+        url = str(item.get("url") or item.get("URL") or target_url)
+        if detected and firewall:
+            evidence = f"WAF detected: {firewall}"
+        elif detected:
+            evidence = "WAF detected (name unknown)"
+        else:
+            evidence = "No WAF detected"
+        findings.append(
+            Finding(
+                severity="INFO",
+                tool="wafw00f",
+                category="waf",
+                title="WAF detection result",
+                url=url,
+                description="A WAF can block/scatter scanner traffic and cause false negatives; tune scan intensity accordingly.",
+                evidence=truncate(redact_text(evidence), 800),
+                remediation="If a WAF is present, use safe scan rates and validate findings with manual checks.",
+            )
+        )
+    return findings if findings else parse_wafw00f_text(path, target_url)
+
+
 def parse_wafw00f_text(path: Path, target_url: str) -> List[Finding]:
+    """Fallback: parse wafw00f plain-text output."""
     text = safe_read_text(path)
     if not text:
         return []
     waf = ""
     for line in text.splitlines():
-        if "is behind" in line.lower() or "waf" in line.lower() and "detected" in line.lower():
+        if "is behind" in line.lower() or ("waf" in line.lower() and "detected" in line.lower()):
             waf = line.strip()
             break
     if not waf:
@@ -1877,7 +1915,9 @@ def collect_tools_and_findings(session_dir: Path) -> Tuple[Set[str], List[Findin
                 add("subfinder", parse_subfinder_jsonl(fpath, target_host))
             elif rel == "emaildns/httpx.jsonl":
                 add("httpx", parse_httpx_jsonl(fpath, target_host))
-            elif rel in ("webapp/wafw00f.json", "webapp/wafw00f.txt"):
+            elif rel == "webapp/wafw00f.json":
+                add("wafw00f", parse_wafw00f_json(fpath, target_url))
+            elif rel == "webapp/wafw00f.txt":
                 add("wafw00f", parse_wafw00f_text(fpath, target_url))
             elif rel == "webapp/wapiti.json":
                 add("wapiti", parse_wapiti(fpath))

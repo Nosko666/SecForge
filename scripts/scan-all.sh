@@ -393,7 +393,7 @@ main() {
     sf_circuit_breaker_check "${SECFORGE_TARGET_URL}" "${threshold}" "${cooldown}"
 
     if sf_tool wafw00f >/dev/null 2>&1; then
-      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/wafw00f.json" "$(sf_tool wafw00f)" "${SECFORGE_TARGET_URL}" -f json -o "${SECFORGE_SESSION_DIR}/webapp/wafw00f.json"
+      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/wafw00f.log" "$(sf_tool wafw00f)" "${SECFORGE_TARGET_URL}" -f json -o "${SECFORGE_SESSION_DIR}/webapp/wafw00f.json"
     fi
 
     if sf_tool whatweb >/dev/null 2>&1; then
@@ -405,7 +405,12 @@ main() {
     fi
 
     if sf_tool nuclei >/dev/null 2>&1; then
-      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/nuclei.log" "$(sf_tool nuclei)" -u "${SECFORGE_TARGET_URL}" -json-export "${SECFORGE_SESSION_DIR}/webapp/nuclei.json"
+      local _nuclei_tpl="${SECFORGE_ROOT}/tools/nuclei-templates"
+      if [[ -d "${_nuclei_tpl}" ]]; then
+        sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/nuclei.log" "$(sf_tool nuclei)" -u "${SECFORGE_TARGET_URL}" -t "${_nuclei_tpl}" -json-export "${SECFORGE_SESSION_DIR}/webapp/nuclei.json"
+      else
+        sf_warn "Nuclei templates not found at ${_nuclei_tpl}. Skipping nuclei (run installer to fetch templates)."
+      fi
     fi
 
     sf_circuit_breaker_check "${SECFORGE_TARGET_URL}" "${threshold}" "${cooldown}"
@@ -555,7 +560,9 @@ main() {
   # Optional codebase scans.
   if [[ -n "${SECFORGE_CODE_PATH}" ]]; then
     if sf_tool trufflehog >/dev/null 2>&1; then
-      local _th_raw="${SECFORGE_SESSION_DIR}/secrets/.trufflehog-raw.jsonl"
+      local _th_raw
+      _th_raw="$(mktemp /tmp/secforge-trufflehog-raw.XXXXXX)"
+      chmod 0600 "${_th_raw}"
       sf_run "${timeout_web}" "${_th_raw}" "$(sf_tool trufflehog)" filesystem "${SECFORGE_CODE_PATH}" --json
       if [[ -s "${_th_raw}" ]] && [[ -r "${SCRIPT_DIR}/sanitize-trufflehog.py" ]]; then
         python3 "${SCRIPT_DIR}/sanitize-trufflehog.py" "${_th_raw}" "${SECFORGE_SESSION_DIR}/secrets/trufflehog.json" 2>/dev/null || sf_warn "TruffleHog sanitization failed"

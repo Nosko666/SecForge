@@ -49,8 +49,7 @@ install_zap() {
   extract_dir="${tmp}/extract"
 
   sf_curl -o "${archive}" "${url}"
-  mkdir -p "${extract_dir}"
-  tar -xzf "${archive}" -C "${extract_dir}"
+  sf_extract_archive_to_dir "${archive}" "${extract_dir}"
 
   zap_extracted="$(find "${extract_dir}" -maxdepth 2 -type f -name zap.sh -print | head -n1 || true)"
   if [[ -z "${zap_extracted}" ]]; then
@@ -95,11 +94,9 @@ main() {
   sf_install_github_release_binary "projectdiscovery/nuclei" "nuclei" "${SECFORGE_ROOT}/bin/nuclei" || sf_warn "Failed to install nuclei"
   mark_tool_if_present "nuclei" "${SECFORGE_ROOT}/bin/nuclei"
 
-  # Fetch Nuclei templates (essential for scanning)
-  if [[ -x "${SECFORGE_ROOT}/bin/nuclei" ]]; then
-    sf_log "Updating Nuclei templates..."
-    "${SECFORGE_ROOT}/bin/nuclei" -update-templates >/dev/null 2>&1 || sf_warn "Nuclei template update failed (scanning may have limited coverage)."
-  fi
+  # Clone Nuclei templates into a shared, root-owned directory (not root HOME).
+  # update-all.sh will keep them current via the tools/* git-pull loop.
+  sf_git_clone_or_update "https://github.com/projectdiscovery/nuclei-templates.git" "${SECFORGE_ROOT}/tools/nuclei-templates"
 
   sf_install_github_release_binary "ffuf/ffuf" "ffuf" "${SECFORGE_ROOT}/bin/ffuf" || sf_warn "Failed to install ffuf"
   mark_tool_if_present "ffuf" "${SECFORGE_ROOT}/bin/ffuf"

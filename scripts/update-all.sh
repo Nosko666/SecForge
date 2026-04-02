@@ -141,8 +141,7 @@ update_zap_tarball() {
   extract_dir="${tmp}/extract"
 
   sf_curl -o "${archive}" "${url}"
-  mkdir -p "${extract_dir}"
-  tar -xzf "${archive}" -C "${extract_dir}"
+  sf_extract_archive_to_dir "${archive}" "${extract_dir}"
 
   zap_extracted="$(find "${extract_dir}" -maxdepth 2 -type f -name zap.sh -print | head -n1 || true)"
   if [[ -z "${zap_extracted}" ]]; then
@@ -418,9 +417,7 @@ main() {
   fi
 
   # 8) Signatures/templates (best-effort).
-  if command -v nuclei >/dev/null 2>&1; then
-    sf_step "Updating Nuclei templates" nuclei -update-templates
-  fi
+  # Nuclei templates are updated via the tools/* git-pull loop above (no root-HOME writes).
   if command -v freshclam >/dev/null 2>&1; then
     sf_step "Updating ClamAV signatures (freshclam)" freshclam
   fi

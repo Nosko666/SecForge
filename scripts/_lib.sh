@@ -356,8 +356,19 @@ if archive.endswith(('.tar.gz', '.tgz')):
 elif archive.endswith('.zip'):
     with zipfile.ZipFile(archive) as zf:
         for info in zf.infolist():
-            safe_path(info.filename, dest)
-        zf.extractall(dest)
+            target = safe_path(info.filename, dest)
+            # Skip symlinks in zip (external_attr check) and directory traversal
+            if info.is_dir():
+                os.makedirs(target, exist_ok=True)
+                continue
+            # Ensure parent dir exists and is not a symlink
+            parent = os.path.dirname(target)
+            os.makedirs(parent, exist_ok=True)
+            if os.path.islink(parent):
+                raise ValueError(f"Parent is a symlink: {parent}")
+            with zf.open(info) as src, open(target, 'wb') as dst:
+                import shutil
+                shutil.copyfileobj(src, dst)
 else:
     print(f"Unsupported archive: {archive}", file=sys.stderr)
     sys.exit(1)

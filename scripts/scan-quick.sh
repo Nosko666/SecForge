@@ -76,7 +76,7 @@ main() {
   # Tier 1 only.
   if [[ "${SECFORGE_TARGET_HOST}" != "this_server" ]]; then
 	    if sf_tool wafw00f >/dev/null 2>&1; then
-	      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/wafw00f.json" "$(sf_tool wafw00f)" "${SECFORGE_TARGET_URL}" -f json -o "${SECFORGE_SESSION_DIR}/webapp/wafw00f.json"
+	      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/wafw00f.log" "$(sf_tool wafw00f)" "${SECFORGE_TARGET_URL}" -f json -o "${SECFORGE_SESSION_DIR}/webapp/wafw00f.json"
 	    fi
 
 	    if sf_tool whatweb >/dev/null 2>&1; then
@@ -84,7 +84,12 @@ main() {
 	    fi
 
 	    if sf_tool nuclei >/dev/null 2>&1; then
-	      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/nuclei.log" "$(sf_tool nuclei)" -u "${SECFORGE_TARGET_URL}" -json-export "${SECFORGE_SESSION_DIR}/webapp/nuclei.json"
+	      local _nuclei_tpl="${SECFORGE_ROOT}/tools/nuclei-templates"
+	      if [[ -d "${_nuclei_tpl}" ]]; then
+	        sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/nuclei.log" "$(sf_tool nuclei)" -u "${SECFORGE_TARGET_URL}" -t "${_nuclei_tpl}" -json-export "${SECFORGE_SESSION_DIR}/webapp/nuclei.json"
+	      else
+	        sf_warn "Nuclei templates not found at ${_nuclei_tpl}. Skipping nuclei."
+	      fi
 	    fi
 
     if sf_tool nmap >/dev/null 2>&1; then
