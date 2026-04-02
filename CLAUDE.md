@@ -108,7 +108,7 @@ Session naming:
 | wafw00f | `wafw00f TARGET -f json -o /opt/secforge/reports/SESSION/webapp/wafw00f.json` | JSON |
 | CORScanner (optional) | `python3 /opt/secforge/tools/corscanner/cors_scan.py -u TARGET -o /opt/secforge/reports/SESSION/webapp/corscanner.json` | JSON |
 | OWASP ZAP | Run ZAP headless from `/opt/secforge/tools/zap/` and scan via ZAP API (localhost:8080); output JSON to `/opt/secforge/reports/SESSION/webapp/zap.json` | JSON |
-| Nuclei | `nuclei -u TARGET -t /opt/secforge/tools/nuclei-templates -json-export /opt/secforge/reports/SESSION/webapp/nuclei.json` | JSON |
+| Nuclei | `nuclei -duc -u TARGET -t /opt/secforge/tools/nuclei-templates -json-export /opt/secforge/reports/SESSION/webapp/nuclei.json` | JSON |
 | SQLMap (Tier 2) | `sqlmap -u "TARGET" --batch --forms --crawl=3 --output-dir=/opt/secforge/reports/SESSION/webapp/sqlmap/` | text |
 | ffuf | `ffuf -u TARGET/FUZZ -w /opt/secforge/wordlists/directories.txt -o /opt/secforge/reports/SESSION/webapp/ffuf.json -of json` | JSON |
 | Nikto | `nikto -h TARGET -Format json -output /opt/secforge/reports/SESSION/webapp/nikto.json` | JSON |

@@ -240,7 +240,15 @@ main() {
 	    "${session_dir}/cloud"
 
   if [[ -d "${reports_root}" ]]; then
+    # Global latest (may fail for non-root due to sticky bit — that's safe).
     (cd "${reports_root}" && ln -sfn "${session_id}" latest) >/dev/null 2>&1 || true
+    # Per-user latest (always succeeds for the scan user).
+    local _sf_user
+    _sf_user="$(whoami 2>/dev/null || id -un 2>/dev/null || echo "uid$(id -u)")"
+    _sf_user="$(printf '%s' "${_sf_user}" | tr -cd 'A-Za-z0-9._-')"
+    if [[ -n "${_sf_user}" ]]; then
+      (cd "${reports_root}" && ln -sfn "${session_id}" "latest-${_sf_user}") >/dev/null 2>&1 || true
+    fi
   fi
 
   local missing_tools
