@@ -655,7 +655,7 @@ This script should:
 - pip install --upgrade for pip tools
 - Re-download latest GitHub release binaries for tools installed into `/opt/secforge/bin/`
 - git pull for git-cloned tools
-- Nuclei templates are updated via the `tools/*` git-pull loop (`/opt/secforge/tools/nuclei-templates`); no separate `nuclei -update-templates` step
+- Nuclei templates are updated via the `tools/*` git-pull loop (`/opt/secforge/tools/nuclei-templates`); no separate template command needed
 - freshclam for ClamAV signatures
 - rkhunter --update for rootkit definitions
 - Print a summary of what was updated
