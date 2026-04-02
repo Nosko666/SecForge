@@ -214,14 +214,16 @@ sf_ensure_runtime_layout() {
     "${secforge_root}/backups" \
     "${secforge_root}/tools" \
     "${secforge_root}/wordlists" \
-    "${secforge_root}/bin"
+    "${secforge_root}/bin" \
+    "${secforge_root}/logs"
 
   # Keep code/scripts root-owned; allow non-root scans to write only where needed.
-  chown root:root "${secforge_root}" "${secforge_root}/bin" 2>/dev/null || true
+  chown root:root "${secforge_root}" "${secforge_root}/bin" "${secforge_root}/logs" 2>/dev/null || true
   chmod 0755 "${secforge_root}" "${secforge_root}/bin" 2>/dev/null || true
+  chmod 0750 "${secforge_root}/logs" 2>/dev/null || true
 
   chown -R root:"${group_name}" "${secforge_root}/reports" "${secforge_root}/backups" 2>/dev/null || true
-  chmod 2775 "${secforge_root}/reports"
+  chmod 3775 "${secforge_root}/reports"
   chmod 2750 "${secforge_root}/backups"
 
   chown -R root:root "${secforge_root}/tools" "${secforge_root}/wordlists" 2>/dev/null || true
@@ -327,23 +329,39 @@ sf_extract_archive_to_dir() {
 
   mkdir -p "${dest_dir}"
 
-  case "${archive_path}" in
-    *.tar.gz|*.tgz)
-      tar -xzf "${archive_path}" -C "${dest_dir}"
-      ;;
-    *.zip)
-      python3 - "${archive_path}" "${dest_dir}" <<'PY'
-import sys, zipfile
-zip_path = sys.argv[1]
-dest = sys.argv[2]
-with zipfile.ZipFile(zip_path) as zf:
-    zf.extractall(dest)
+  # Use Python for both formats with path traversal protection (zip slip / tar traversal).
+  python3 - "${archive_path}" "${dest_dir}" <<'PY'
+import os, sys, tarfile, zipfile
+
+archive = sys.argv[1]
+dest = os.path.realpath(sys.argv[2])
+
+def safe_path(member_name, dest_dir):
+    target = os.path.realpath(os.path.join(dest_dir, member_name))
+    if not target.startswith(dest_dir + os.sep) and target != dest_dir:
+        raise ValueError(f"Path traversal detected: {member_name}")
+    return target
+
+if archive.endswith(('.tar.gz', '.tgz')):
+    with tarfile.open(archive, 'r:gz') as tf:
+        for m in tf.getmembers():
+            safe_path(m.name, dest)
+            if m.issym() or m.islnk():
+                continue  # skip symlinks/hardlinks for safety
+        for m in tf.getmembers():
+            if m.issym() or m.islnk():
+                continue
+            safe_path(m.name, dest)
+            tf.extract(m, dest, set_attrs=False)
+elif archive.endswith('.zip'):
+    with zipfile.ZipFile(archive) as zf:
+        for info in zf.infolist():
+            safe_path(info.filename, dest)
+        zf.extractall(dest)
+else:
+    print(f"Unsupported archive: {archive}", file=sys.stderr)
+    sys.exit(1)
 PY
-      ;;
-    *)
-      sf_die "Unsupported archive type: ${archive_path}"
-      ;;
-  esac
 }
 
 sf_install_github_release_binary() {
@@ -407,7 +425,7 @@ sf_download_wordlists() {
   sf_curl -o "${dst}/common.txt" "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/common.txt" || sf_warn "Failed to download common.txt"
   sf_curl -o "${dst}/directories.txt" "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/directory-list-2.3-small.txt" || sf_warn "Failed to download directories.txt"
   sf_curl -o "${dst}/passwords-top1000.txt" "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/top-1000-most-common-passwords.txt" || sf_warn "Failed to download passwords-top1000.txt"
-  sf_curl -o "${dst}/api-endpoints.txt" "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/api/api-endpoints.txt" || sf_warn "Failed to download api-endpoints.txt"
+  sf_curl -o "${dst}/api-routes.txt" "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/api/api-endpoints.txt" || sf_warn "Failed to download api-routes.txt"
 }
 
 sf_cfg_get_value() {
@@ -435,6 +453,18 @@ sf_cfg_set_value() {
   local key="$2"
   local value="$3"
 
+  # Validate key is safe (alphanumeric + underscore only).
+  if ! [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    sf_warn "sf_cfg_set_value: refusing unsafe key: ${key}"
+    return 1
+  fi
+
+  # Reject values with newlines or NUL (prevents injection in any method).
+  if [[ "${value}" == *$'\n'* ]] || [[ "${value}" == *$'\0'* ]]; then
+    sf_warn "sf_cfg_set_value: refusing value with newlines/NUL for key ${key}"
+    return 1
+  fi
+
   if [[ ! -e "${cfg_file}" ]]; then
     mkdir -p "$(dirname -- "${cfg_file}")"
     local example="${cfg_file}.example"
@@ -445,12 +475,35 @@ sf_cfg_set_value() {
     fi
   fi
 
-  if grep -Eq "^${key}=" "${cfg_file}"; then
-    # Safe because keys/values are controlled (no newlines).
-    sed -i "s|^${key}=.*$|${key}=\"${value}\"|" "${cfg_file}"
-  else
-    printf '\n%s="%s"\n' "${key}" "${value}" >>"${cfg_file}"
-  fi
+  # Use Python for safe key=value replacement (no sed injection risk).
+  SF_CFG_FILE="${cfg_file}" SF_CFG_KEY="${key}" SF_CFG_VALUE="${value}" \
+  python3 - <<'PY'
+import os
+cfg = os.environ["SF_CFG_FILE"]
+key = os.environ["SF_CFG_KEY"]
+val = os.environ["SF_CFG_VALUE"]
+lines = []
+found = False
+try:
+    with open(cfg, "r", encoding="utf-8", errors="replace") as f:
+        lines = f.readlines()
+except FileNotFoundError:
+    pass
+out = []
+for line in lines:
+    stripped = line.rstrip("\n\r")
+    if stripped.startswith(key + "="):
+        out.append(f'{key}="{val}"\n')
+        found = True
+    else:
+        out.append(line if line.endswith("\n") else line + "\n")
+if not found:
+    if out and not out[-1].endswith("\n"):
+        out.append("\n")
+    out.append(f'{key}="{val}"\n')
+with open(cfg, "w", encoding="utf-8") as f:
+    f.writelines(out)
+PY
 }
 
 sf_cfg_add_list_item() {

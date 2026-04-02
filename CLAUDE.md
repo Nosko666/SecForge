@@ -359,7 +359,7 @@ Run:
 Update rules:
 - Prefer upgrading only SecForge-installed apt packages by default (`only-upgrade` style).
 - Offer a full system upgrade only with explicit confirmation.
-- Log before/after versions and failures to `/opt/secforge/reports/updates.log`.
+- Log before/after versions and failures to `/opt/secforge/logs/updates.log`.
 
 ## Rules (always)
 

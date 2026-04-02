@@ -211,8 +211,9 @@ main() {
 
   local log_file ts
   ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  log_file="${SECFORGE_ROOT}/reports/updates.log"
-  mkdir -p "${SECFORGE_ROOT}/reports"
+  log_file="${SECFORGE_ROOT}/logs/updates.log"
+  mkdir -p "${SECFORGE_ROOT}/logs"
+  chmod 0750 "${SECFORGE_ROOT}/logs" 2>/dev/null || true
 
   # Log everything.
   exec > >(tee -a "${log_file}") 2>&1

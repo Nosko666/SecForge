@@ -74,10 +74,11 @@ sf_run() {
 
 sf_sleep_ms() {
   local ms="$1"
-  python3 - <<PY
-import time
-time.sleep(${ms}/1000)
-PY
+  # Validate numeric to prevent injection; fall back to 200ms.
+  if ! [[ "${ms}" =~ ^[0-9]+$ ]]; then
+    ms=200
+  fi
+  sleep "$(awk -v ms="${ms}" 'BEGIN{printf "%.3f", ms/1000}')"
 }
 
 sf_circuit_breaker_check() {
@@ -347,8 +348,21 @@ main() {
     SECFORGE_CODE_PATH="$2"
   fi
 
+  # Preflight exports session vars (safe: tempfile, not process substitution).
+  local _pf_tmp
+  _pf_tmp="$(mktemp /tmp/secforge-preflight.XXXXXX)"
+  if ! "${SCRIPT_DIR}/preflight.sh" --target "${target}" --profile "all" --require-tools "curl,jq" >"${_pf_tmp}"; then
+    rm -f "${_pf_tmp}"
+    sf_die "Preflight failed. Check errors above."
+  fi
+  if [[ ! -s "${_pf_tmp}" ]]; then
+    rm -f "${_pf_tmp}"
+    sf_die "Preflight produced no output (likely a bug)."
+  fi
   # shellcheck disable=SC1090
-  source <("${SCRIPT_DIR}/preflight.sh" --target "${target}" --profile "all" --require-tools "curl,jq")
+  source "${_pf_tmp}"
+  rm -f "${_pf_tmp}"
+  [[ -n "${SECFORGE_SESSION_DIR:-}" ]] || sf_die "Preflight did not set SECFORGE_SESSION_DIR."
 
   local timeout_web timeout_portscan timeout_hardening timeout_zap delay_ms threshold cooldown
   timeout_web="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "TIMEOUT_WEB_SECONDS" || true)"
@@ -379,7 +393,7 @@ main() {
     sf_circuit_breaker_check "${SECFORGE_TARGET_URL}" "${threshold}" "${cooldown}"
 
     if sf_tool wafw00f >/dev/null 2>&1; then
-      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/wafw00f.txt" "$(sf_tool wafw00f)" "${SECFORGE_TARGET_URL}"
+      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/wafw00f.json" "$(sf_tool wafw00f)" "${SECFORGE_TARGET_URL}" -f json -o "${SECFORGE_SESSION_DIR}/webapp/wafw00f.json"
     fi
 
     if sf_tool whatweb >/dev/null 2>&1; then
@@ -440,7 +454,7 @@ main() {
       sf_run 120 "${SECFORGE_SESSION_DIR}/emaildns/subfinder.jsonl" "$(sf_tool subfinder)" -d "${SECFORGE_TARGET_HOST}" -silent -json
       # Probe discovered hosts (limit to first 200).
       if sf_tool httpx >/dev/null 2>&1; then
-        awk -F'"host":' '{print $2}' "${SECFORGE_SESSION_DIR}/emaildns/subfinder.jsonl" 2>/dev/null | sed 's/[^A-Za-z0-9._-].*$//' | grep -E '^[A-Za-z0-9._-]+$' | head -n 200 >"${SECFORGE_SESSION_DIR}/emaildns/subdomains.txt" || true
+        jq -r '.host // empty' "${SECFORGE_SESSION_DIR}/emaildns/subfinder.jsonl" 2>/dev/null | grep -E '^[A-Za-z0-9._-]+$' | sort -u | head -n 200 >"${SECFORGE_SESSION_DIR}/emaildns/subdomains.txt" || true
         if [[ -s "${SECFORGE_SESSION_DIR}/emaildns/subdomains.txt" ]]; then
           sf_run 300 "${SECFORGE_SESSION_DIR}/emaildns/httpx.jsonl" "$(sf_tool httpx)" -l "${SECFORGE_SESSION_DIR}/emaildns/subdomains.txt" -silent -json
         fi
@@ -453,12 +467,16 @@ main() {
       nmap_top="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "NMAP_TOP_PORTS" || true)"
       nmap_timing="${nmap_timing:--T3}"
       nmap_top="${nmap_top:-1000}"
+      if ! [[ "${nmap_timing}" =~ ^-T[0-5]$ ]]; then
+        sf_warn "Invalid NMAP_TIMING '${nmap_timing}'; defaulting to -T3."
+        nmap_timing="-T3"
+      fi
 
-      sf_run "${timeout_portscan}" "${SECFORGE_SESSION_DIR}/network/nmap.log" "$(sf_tool nmap)" ${nmap_timing} -sV -sC --top-ports "${nmap_top}" -oX "${SECFORGE_SESSION_DIR}/network/nmap.xml" "${SECFORGE_TARGET_HOST}"
+      sf_run "${timeout_portscan}" "${SECFORGE_SESSION_DIR}/network/nmap.log" "$(sf_tool nmap)" "${nmap_timing}" -sV -sC --top-ports "${nmap_top}" -oX "${SECFORGE_SESSION_DIR}/network/nmap.xml" "${SECFORGE_TARGET_HOST}"
     fi
 
     if sf_tool ssh-audit >/dev/null 2>&1; then
-      sf_run 60 "${SECFORGE_SESSION_DIR}/network/ssh-audit.json" "$(sf_tool ssh-audit)" --json "${SECFORGE_TARGET_HOST}"
+      sf_run 60 "${SECFORGE_SESSION_DIR}/hardening/ssh-audit.json" "$(sf_tool ssh-audit)" --json "${SECFORGE_TARGET_HOST}"
     fi
 
     if sf_tool masscan >/dev/null 2>&1; then
@@ -537,10 +555,15 @@ main() {
   # Optional codebase scans.
   if [[ -n "${SECFORGE_CODE_PATH}" ]]; then
     if sf_tool trufflehog >/dev/null 2>&1; then
-      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/secrets/trufflehog.json" "$(sf_tool trufflehog)" filesystem "${SECFORGE_CODE_PATH}" --json
+      local _th_raw="${SECFORGE_SESSION_DIR}/secrets/.trufflehog-raw.jsonl"
+      sf_run "${timeout_web}" "${_th_raw}" "$(sf_tool trufflehog)" filesystem "${SECFORGE_CODE_PATH}" --json
+      if [[ -s "${_th_raw}" ]] && [[ -r "${SCRIPT_DIR}/sanitize-trufflehog.py" ]]; then
+        python3 "${SCRIPT_DIR}/sanitize-trufflehog.py" "${_th_raw}" "${SECFORGE_SESSION_DIR}/secrets/trufflehog.json" 2>/dev/null || sf_warn "TruffleHog sanitization failed"
+      fi
+      rm -f "${_th_raw}" 2>/dev/null || true
     fi
     if sf_tool gitleaks >/dev/null 2>&1; then
-      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/secrets/gitleaks.log" "$(sf_tool gitleaks)" detect --source "${SECFORGE_CODE_PATH}" --report-path "${SECFORGE_SESSION_DIR}/secrets/gitleaks.json" --report-format json
+      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/secrets/gitleaks.log" "$(sf_tool gitleaks)" detect --source "${SECFORGE_CODE_PATH}" --redact --report-path "${SECFORGE_SESSION_DIR}/secrets/gitleaks.json" --report-format json
     fi
     if sf_tool osv-scanner >/dev/null 2>&1; then
       sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/dependencies/osv.json" "$(sf_tool osv-scanner)" --json "${SECFORGE_CODE_PATH}"

@@ -1857,7 +1857,7 @@ def collect_tools_and_findings(session_dir: Path) -> Tuple[Set[str], List[Findin
                 add("nmap", parse_nmap_xml(fpath, target_host))
             elif rel == "network/masscan.json":
                 add("masscan", parse_masscan(fpath, target_host))
-            elif rel == "network/ssh-audit.json":
+            elif rel in ("hardening/ssh-audit.json", "network/ssh-audit.json"):
                 add("ssh-audit", parse_ssh_audit(fpath, target_host))
             elif rel == "hardening/trivy-rootfs.json":
                 add("trivy", parse_trivy_rootfs(fpath))
@@ -1877,7 +1877,7 @@ def collect_tools_and_findings(session_dir: Path) -> Tuple[Set[str], List[Findin
                 add("subfinder", parse_subfinder_jsonl(fpath, target_host))
             elif rel == "emaildns/httpx.jsonl":
                 add("httpx", parse_httpx_jsonl(fpath, target_host))
-            elif rel == "webapp/wafw00f.txt":
+            elif rel in ("webapp/wafw00f.json", "webapp/wafw00f.txt"):
                 add("wafw00f", parse_wafw00f_text(fpath, target_url))
             elif rel == "webapp/wapiti.json":
                 add("wapiti", parse_wapiti(fpath))

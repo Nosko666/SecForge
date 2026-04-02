@@ -151,6 +151,10 @@ main() {
     sf_ln_sf "$(command -v debsums)" "${SECFORGE_ROOT}/bin/debsums"
     mark_tool_if_present "debsums" "${SECFORGE_ROOT}/bin/debsums"
   fi
+
+  # Trivy rootfs scanning (binary download)
+  sf_install_github_release_binary "aquasecurity/trivy" "trivy" "${SECFORGE_ROOT}/bin/trivy" || sf_warn "Failed to install trivy"
+  mark_tool_if_present "trivy" "${SECFORGE_ROOT}/bin/trivy"
 }
 
 main "$@"

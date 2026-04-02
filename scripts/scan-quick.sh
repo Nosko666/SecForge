@@ -47,9 +47,22 @@ main() {
     sf_die "Usage: ${0##*/} <domain|url|this_server>"
   fi
 
-  # Preflight exports session vars.
+  # Preflight exports session vars (safe: tempfile, not process substitution).
+  local _pf_tmp
+  _pf_tmp="$(mktemp /tmp/secforge-preflight.XXXXXX)"
+  trap 'rm -f "${_pf_tmp}"' EXIT
+  if ! "${SCRIPT_DIR}/preflight.sh" --target "${target}" --profile "quick" --require-tools "curl,jq" >"${_pf_tmp}"; then
+    rm -f "${_pf_tmp}"
+    sf_die "Preflight failed. Check errors above."
+  fi
+  if [[ ! -s "${_pf_tmp}" ]]; then
+    rm -f "${_pf_tmp}"
+    sf_die "Preflight produced no output (likely a bug)."
+  fi
   # shellcheck disable=SC1090
-  source <("${SCRIPT_DIR}/preflight.sh" --target "${target}" --profile "quick" --require-tools "curl,jq")
+  source "${_pf_tmp}"
+  rm -f "${_pf_tmp}"
+  [[ -n "${SECFORGE_SESSION_DIR:-}" ]] || sf_die "Preflight did not set SECFORGE_SESSION_DIR."
 
   local timeout_web timeout_portscan
   timeout_web="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "TIMEOUT_WEB_SECONDS" || true)"
@@ -63,7 +76,7 @@ main() {
   # Tier 1 only.
   if [[ "${SECFORGE_TARGET_HOST}" != "this_server" ]]; then
 	    if sf_tool wafw00f >/dev/null 2>&1; then
-	      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/wafw00f.txt" "$(sf_tool wafw00f)" "${SECFORGE_TARGET_URL}"
+	      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/wafw00f.json" "$(sf_tool wafw00f)" "${SECFORGE_TARGET_URL}" -f json -o "${SECFORGE_SESSION_DIR}/webapp/wafw00f.json"
 	    fi
 
 	    if sf_tool whatweb >/dev/null 2>&1; then
@@ -80,8 +93,13 @@ main() {
       nmap_top="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "NMAP_TOP_PORTS" || true)"
       nmap_timing="${nmap_timing:--T3}"
       nmap_top="${nmap_top:-1000}"
+      # Validate nmap_timing to prevent flag injection from config.
+      if ! [[ "${nmap_timing}" =~ ^-T[0-5]$ ]]; then
+        sf_warn "Invalid NMAP_TIMING '${nmap_timing}'; defaulting to -T3."
+        nmap_timing="-T3"
+      fi
 
-      sf_run "${timeout_portscan}" "${SECFORGE_SESSION_DIR}/network/nmap.log" "$(sf_tool nmap)" ${nmap_timing} -sV -sC --top-ports "${nmap_top}" -oX "${SECFORGE_SESSION_DIR}/network/nmap.xml" "${SECFORGE_TARGET_HOST}"
+      sf_run "${timeout_portscan}" "${SECFORGE_SESSION_DIR}/network/nmap.log" "$(sf_tool nmap)" "${nmap_timing}" -sV -sC --top-ports "${nmap_top}" -oX "${SECFORGE_SESSION_DIR}/network/nmap.xml" "${SECFORGE_TARGET_HOST}"
     fi
 
     if sf_tool testssl.sh >/dev/null 2>&1; then
@@ -104,7 +122,7 @@ main() {
   fi
 
   if sf_tool ssh-audit >/dev/null 2>&1 && [[ "${SECFORGE_TARGET_HOST}" != "this_server" ]]; then
-    sf_run 60 "${SECFORGE_SESSION_DIR}/network/ssh-audit.json" "$(sf_tool ssh-audit)" --json "${SECFORGE_TARGET_HOST}" || true
+    sf_run 60 "${SECFORGE_SESSION_DIR}/hardening/ssh-audit.json" "$(sf_tool ssh-audit)" --json "${SECFORGE_TARGET_HOST}" || true
   fi
 
   if [[ -r "${SCRIPT_DIR}/merge-reports.py" ]]; then

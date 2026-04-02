@@ -95,6 +95,12 @@ main() {
   sf_install_github_release_binary "projectdiscovery/nuclei" "nuclei" "${SECFORGE_ROOT}/bin/nuclei" || sf_warn "Failed to install nuclei"
   mark_tool_if_present "nuclei" "${SECFORGE_ROOT}/bin/nuclei"
 
+  # Fetch Nuclei templates (essential for scanning)
+  if [[ -x "${SECFORGE_ROOT}/bin/nuclei" ]]; then
+    sf_log "Updating Nuclei templates..."
+    "${SECFORGE_ROOT}/bin/nuclei" -update-templates >/dev/null 2>&1 || sf_warn "Nuclei template update failed (scanning may have limited coverage)."
+  fi
+
   sf_install_github_release_binary "ffuf/ffuf" "ffuf" "${SECFORGE_ROOT}/bin/ffuf" || sf_warn "Failed to install ffuf"
   mark_tool_if_present "ffuf" "${SECFORGE_ROOT}/bin/ffuf"
 
@@ -137,6 +143,11 @@ EOF
   fi
   mark_tool_if_present "xsstrike" "${SECFORGE_ROOT}/bin/xsstrike"
 
+  # Install XSStrike dependencies into venv (best-effort)
+  if [[ -r "${SECFORGE_ROOT}/tools/xsstrike/requirements.txt" ]]; then
+    sf_install_venv_packages "${SECFORGE_VENV}" -r "${SECFORGE_ROOT}/tools/xsstrike/requirements.txt" || sf_warn "XSStrike dependency install failed (continuing)."
+  fi
+
   sf_git_clone_or_update "https://github.com/chenjj/CORScanner.git" "${SECFORGE_ROOT}/tools/corscanner"
   local cors_entry
   cors_entry="$(find "${SECFORGE_ROOT}/tools/corscanner" -maxdepth 2 -type f \( -iname '*cors*scanner*.py' -o -iname 'corscanner.py' -o -iname 'cors_scan.py' \) 2>/dev/null | head -n1 || true)"
@@ -150,6 +161,11 @@ EOF
     sf_warn "CORScanner cloned but entrypoint not found; leaving in tools/ for manual use."
   fi
   mark_tool_if_present "corscanner" "${SECFORGE_ROOT}/bin/corscanner"
+
+  # Install CORScanner dependencies into venv (best-effort)
+  if [[ -r "${SECFORGE_ROOT}/tools/corscanner/requirements.txt" ]]; then
+    sf_install_venv_packages "${SECFORGE_VENV}" -r "${SECFORGE_ROOT}/tools/corscanner/requirements.txt" || sf_warn "CORScanner dependency install failed (continuing)."
+  fi
 
   sf_install_venv_packages "${SECFORGE_VENV}" sqlmap commix || sf_warn "Failed to install one or more pip web tools"
   if [[ -x "${SECFORGE_VENV}/bin/sqlmap" ]]; then

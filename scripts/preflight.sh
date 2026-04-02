@@ -306,23 +306,34 @@ if out_path:
     json.dump(data, f, indent=2, sort_keys=True)
 PY
 
-  # Exports for callers (stdout only).
-  cat <<EOF
-export SECFORGE_ROOT="${SECFORGE_ROOT}"
-export SECFORGE_CONFIG_FILE="${SECFORGE_CONFIG_FILE}"
-export SECFORGE_SESSION_ID="${session_id}"
-export SECFORGE_SESSION_DIR="${session_dir}"
-export SECFORGE_TARGET_INPUT="$(printf '%s' "${target}" | sed 's/\"/\\\\\"/g')"
-export SECFORGE_TARGET_URL="${base_url}"
-export SECFORGE_TARGET_FULL_URL="${url}"
-export SECFORGE_TARGET_HOST="${host}"
-export SECFORGE_TARGET_PORT="${port}"
-export SECFORGE_SCAN_DELAY_MS="${scan_delay_ms}"
-export SECFORGE_MAX_CONCURRENT_TOOLS="${max_concurrent}"
-export SECFORGE_CIRCUIT_BREAKER_THRESHOLD_SECONDS="${threshold}"
-export SECFORGE_CIRCUIT_BREAKER_COOLDOWN_SECONDS="${cooldown}"
-export SECFORGE_MISSING_TOOLS="${missing_tools}"
-EOF
+  # Safe exports for callers (stdout only).
+  # Use declare -p with an explicit allowlist to avoid shell injection.
+  # Every variable MUST be set before declare -p is called.
+  export SECFORGE_ROOT="${SECFORGE_ROOT}"
+  export SECFORGE_CONFIG_FILE="${SECFORGE_CONFIG_FILE}"
+  export SECFORGE_SESSION_ID="${session_id}"
+  export SECFORGE_SESSION_DIR="${session_dir}"
+  export SECFORGE_TARGET_INPUT="${target}"
+  export SECFORGE_TARGET_URL="${base_url}"
+  export SECFORGE_TARGET_FULL_URL="${url}"
+  export SECFORGE_TARGET_HOST="${host}"
+  export SECFORGE_TARGET_PORT="${port}"
+  export SECFORGE_SCAN_DELAY_MS="${scan_delay_ms}"
+  export SECFORGE_MAX_CONCURRENT_TOOLS="${max_concurrent}"
+  export SECFORGE_CIRCUIT_BREAKER_THRESHOLD_SECONDS="${threshold}"
+  export SECFORGE_CIRCUIT_BREAKER_COOLDOWN_SECONDS="${cooldown}"
+  export SECFORGE_MISSING_TOOLS="${missing_tools}"
+
+  local _sf_var
+  for _sf_var in \
+    SECFORGE_ROOT SECFORGE_CONFIG_FILE SECFORGE_SESSION_ID SECFORGE_SESSION_DIR \
+    SECFORGE_TARGET_INPUT SECFORGE_TARGET_URL SECFORGE_TARGET_FULL_URL \
+    SECFORGE_TARGET_HOST SECFORGE_TARGET_PORT \
+    SECFORGE_SCAN_DELAY_MS SECFORGE_MAX_CONCURRENT_TOOLS \
+    SECFORGE_CIRCUIT_BREAKER_THRESHOLD_SECONDS SECFORGE_CIRCUIT_BREAKER_COOLDOWN_SECONDS \
+    SECFORGE_MISSING_TOOLS; do
+    declare -p "${_sf_var}" 2>/dev/null || true
+  done
 }
 
 main "$@"
