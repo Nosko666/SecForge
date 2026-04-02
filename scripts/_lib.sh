@@ -434,8 +434,8 @@ sf_download_wordlists() {
 
   # Note: keep names stable for scripts.
   sf_curl -o "${dst}/common.txt" "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/common.txt" || sf_warn "Failed to download common.txt"
-  sf_curl -o "${dst}/directories.txt" "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/directory-list-2.3-small.txt" || sf_warn "Failed to download directories.txt"
-  sf_curl -o "${dst}/passwords-top1000.txt" "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/top-1000-most-common-passwords.txt" || sf_warn "Failed to download passwords-top1000.txt"
+  sf_curl -o "${dst}/directories.txt" "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/raft-small-directories.txt" || sf_warn "Failed to download directories.txt"
+  sf_curl -o "${dst}/passwords-top1000.txt" "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/xato-net-10-million-passwords-1000.txt" || sf_warn "Failed to download passwords-top1000.txt"
   sf_curl -o "${dst}/api-routes.txt" "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/api/api-endpoints.txt" || sf_warn "Failed to download api-routes.txt"
 }
 
@@ -470,9 +470,10 @@ sf_cfg_set_value() {
     return 1
   fi
 
-  # Reject values with newlines or NUL (prevents injection in any method).
-  if [[ "${value}" == *$'\n'* ]] || [[ "${value}" == *$'\0'* ]]; then
-    sf_warn "sf_cfg_set_value: refusing value with newlines/NUL for key ${key}"
+  # Reject values with newlines (prevents injection).
+  # Note: bash strings cannot contain NUL bytes, so no NUL check is needed.
+  if [[ "${value}" == *$'\n'* ]]; then
+    sf_warn "sf_cfg_set_value: refusing value with newlines for key ${key}"
     return 1
   fi
 
