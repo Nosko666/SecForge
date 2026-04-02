@@ -567,7 +567,7 @@ main() {
       if [[ -s "${_th_raw}" ]] && [[ -r "${SCRIPT_DIR}/sanitize-trufflehog.py" ]]; then
         python3 "${SCRIPT_DIR}/sanitize-trufflehog.py" "${_th_raw}" "${SECFORGE_SESSION_DIR}/secrets/trufflehog.json" 2>/dev/null || sf_warn "TruffleHog sanitization failed"
       fi
-      rm -f "${_th_raw}" 2>/dev/null || true
+      rm -f "${_th_raw}" "${_th_raw}.err" 2>/dev/null || true
     fi
     if sf_tool gitleaks >/dev/null 2>&1; then
       sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/secrets/gitleaks.log" "$(sf_tool gitleaks)" detect --source "${SECFORGE_CODE_PATH}" --redact --report-path "${SECFORGE_SESSION_DIR}/secrets/gitleaks.json" --report-format json
