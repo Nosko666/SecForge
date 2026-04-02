@@ -50,7 +50,7 @@ main() {
   # Preflight exports session vars (safe: tempfile, not process substitution).
   local _pf_tmp
   _pf_tmp="$(mktemp /tmp/secforge-preflight.XXXXXX)"
-  trap 'rm -f "${_pf_tmp}"' EXIT
+  trap 'rm -f "${_pf_tmp:-}"' EXIT
   if ! "${SCRIPT_DIR}/preflight.sh" --target "${target}" --profile "quick" --require-tools "curl,jq" >"${_pf_tmp}"; then
     rm -f "${_pf_tmp}"
     sf_die "Preflight failed. Check errors above."
