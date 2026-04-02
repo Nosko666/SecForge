@@ -435,7 +435,7 @@ sf_download_wordlists() {
   # Note: keep names stable for scripts.
   sf_curl -o "${dst}/common.txt" "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/common.txt" || sf_warn "Failed to download common.txt"
   sf_curl -o "${dst}/directories.txt" "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/raft-small-directories.txt" || sf_warn "Failed to download directories.txt"
-  sf_curl -o "${dst}/passwords-top1000.txt" "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/xato-net-10-million-passwords-1000.txt" || sf_warn "Failed to download passwords-top1000.txt"
+  sf_curl -o "${dst}/passwords-top1000.txt" "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10k-most-common.txt" || sf_warn "Failed to download passwords-top1000.txt"
   sf_curl -o "${dst}/api-routes.txt" "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/api/api-endpoints.txt" || sf_warn "Failed to download api-routes.txt"
 }
 
