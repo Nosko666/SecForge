@@ -221,6 +221,11 @@ PY
 }
 
 sf_tier2_opt_in() {
+  # SECFORGE_ASSUME_YES bypasses the interactive prompt (for automated testing).
+  if [[ "${SECFORGE_ASSUME_YES:-0}" == "1" ]]; then
+    sf_warn "Tier 2 auto-approved (SECFORGE_ASSUME_YES=1)."
+    return 0
+  fi
   cat >&2 <<'EOF'
 Tier 2 tools send real attack payloads (SQLi/XSS/command injection) to test vulnerabilities.
 On production, this can slow your app, fill logs, trigger bans, and (if vulnerable) affect data.
@@ -346,6 +351,12 @@ main() {
   fi
   if [[ -n "${2:-}" ]]; then
     SECFORGE_CODE_PATH="$2"
+  fi
+
+  # Suggest tmux for long-running full scans (can take 30-60 minutes).
+  if [[ -z "${TMUX:-}" ]] && [[ -z "${STY:-}" ]] && [[ "${SECFORGE_ASSUME_YES:-0}" != "1" ]]; then
+    sf_warn "Full scans can take 30-60 minutes. Consider running inside tmux/screen to avoid SSH timeout."
+    sf_warn "  Start with: tmux new -s secforge"
   fi
 
   # Preflight exports session vars (safe: tempfile, not process substitution).
@@ -513,7 +524,7 @@ main() {
 
   if sf_tool clamscan >/dev/null 2>&1; then
     # Scoped scan by default; full / scan is opt-in.
-    sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/clamav.stdout" "$(sf_tool clamscan)" -r /home /var/www /tmp /opt --log="${SECFORGE_SESSION_DIR}/hardening/clamav.log" --exclude-dir="^/proc" --exclude-dir="^/sys" || true
+    sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/clamav.stdout" "$(sf_tool clamscan)" -r /home /var/www /tmp --log="${SECFORGE_SESSION_DIR}/hardening/clamav.log" --exclude-dir="^/proc" --exclude-dir="^/sys" --exclude-dir="^/opt/secforge" || true
   fi
 
   if sf_tool rkhunter >/dev/null 2>&1; then
