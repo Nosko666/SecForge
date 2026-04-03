@@ -55,7 +55,32 @@ EOF
   fi
   mark_tool_if_present "apkhunt" "${SECFORGE_ROOT}/bin/apkhunt"
 
-  # APKLeaks is used in mobile audits; install it here as well (even if Secrets category isn't installed).
+  # jadx (Java decompiler — required by APKLeaks for APK analysis)
+  sf_apt_install unzip
+  local jadx_dir="${SECFORGE_ROOT}/tools/jadx"
+  if [[ ! -x "${jadx_dir}/bin/jadx" ]]; then
+    sf_log "Installing jadx (Java decompiler for APK analysis)..."
+    local jadx_tmp jadx_url
+    jadx_tmp="$(sf_mktemp_dir)"
+    jadx_url="$(sf_github_latest_release_json "skylot/jadx" | jq -r '
+      [.assets[] | select(.name | test("jadx.*\\.zip$"; "i")) | select(.name | test("no-jre"; "i") | not)] | .[0].browser_download_url
+    ')"
+    if [[ -n "${jadx_url}" && "${jadx_url}" != "null" ]]; then
+      sf_curl -o "${jadx_tmp}/jadx.zip" "${jadx_url}"
+      mkdir -p "${jadx_dir}"
+      unzip -q -o "${jadx_tmp}/jadx.zip" -d "${jadx_dir}"
+      chmod +x "${jadx_dir}/bin/jadx" 2>/dev/null || true
+      sf_ln_sf "${jadx_dir}/bin/jadx" "${SECFORGE_ROOT}/bin/jadx"
+    else
+      sf_warn "Could not find jadx release asset (APKLeaks may not work without it)."
+    fi
+    rm -rf "${jadx_tmp}"
+  else
+    sf_ln_sf "${jadx_dir}/bin/jadx" "${SECFORGE_ROOT}/bin/jadx"
+  fi
+  mark_tool_if_present "jadx" "${SECFORGE_ROOT}/bin/jadx"
+
+  # APKLeaks (needs jadx to decompile APKs)
   sf_install_venv_packages "${SECFORGE_VENV}" apkleaks || sf_warn "Failed to install apkleaks"
   if [[ -x "${SECFORGE_VENV}/bin/apkleaks" ]]; then
     sf_ln_sf "${SECFORGE_VENV}/bin/apkleaks" "${SECFORGE_ROOT}/bin/apkleaks"

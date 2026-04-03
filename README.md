@@ -143,10 +143,11 @@ This is the core security tooling SecForge installs/orchestrates (support packag
 | NetExec (nxc) | Passwords | 2 | Auth testing/enumeration against services (active) |
 | TruffleHog | Secrets | 1 | Finds secrets in code/repos/filesystems |
 | Gitleaks | Secrets | 1 | Finds secrets in repos with rulesets |
-| APKLeaks | Secrets | 1 | Finds hardcoded secrets in APKs |
+| APKLeaks | Secrets | 1 | Finds hardcoded secrets in APKs (requires jadx) |
 | MobSF (Docker) | Mobile | 1 | Mobile app security analysis (Docker-only, optional) |
 | APKDeepLens | Mobile | 1 | Static APK analysis/reporting |
 | APKHunt | Mobile | 1 | APK analysis for common issues |
+| jadx | Mobile | 1 | Java decompiler (installed automatically, required by APKLeaks) |
 | Lynis | Hardening/Compliance | 1 | System audit with hardening guidance (read-only) |
 | OpenSCAP (oscap) | Compliance | 1 | Compliance/benchmark evaluation (read-only) |
 | stripe-check | Payment | 1 | Stripe/payment security heuristics (CSP, mixed content, raw card fields, etc.) |

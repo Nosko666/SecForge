@@ -176,6 +176,8 @@ Notes:
 | APKDeepLens | `python3 /opt/secforge/tools/apkdeeplens/APKDeepLens.py -apk FILE.apk -report` | HTML/PDF |
 | APKHunt | `apkhunt -p FILE.apk -l` | text |
 
+Note: The mobile installer also installs `jadx` (Java decompiler) which APKLeaks requires to analyze APK files. jadx is installed under `/opt/secforge/tools/jadx/`.
+
 ### Category 8: Payment / PCI Compliance
 | Tool | Command | Output |
 |------|---------|--------|

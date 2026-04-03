@@ -62,6 +62,7 @@ Licenses vary per tool; always refer to each upstream project for authoritative 
 - MobSF — upstream: `MobSF/Mobile-Security-Framework-MobSF` (Docker-only in SecForge)
 - APKDeepLens — upstream: `d78ui98/APKDeepLens`
 - APKHunt — upstream: `Cyber-Buddy/APKHunt`
+- jadx — upstream: `skylot/jadx` (Java decompiler, required by APKLeaks)
 
 ### Payment / Compliance
 
