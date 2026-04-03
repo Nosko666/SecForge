@@ -355,6 +355,11 @@ if archive.endswith(('.tar.gz', '.tgz')):
                 continue
             safe_path(m.name, dest)
             tf.extract(m, dest, set_attrs=False)
+            # Preserve execute bit from tarball (set_attrs=False skips this).
+            if m.isfile() and m.mode & 0o111:
+                extracted = os.path.join(dest, m.name)
+                if os.path.isfile(extracted):
+                    os.chmod(extracted, os.stat(extracted).st_mode | 0o111)
 elif archive.endswith('.zip'):
     with zipfile.ZipFile(archive) as zf:
         for info in zf.infolist():
