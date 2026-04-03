@@ -101,6 +101,8 @@ All reports go under:
 
 Session naming:
 - `SESSION=YYYY-MM-DD_HHMMSS_TARGET` (example: `2026-03-30_143022_example.com`)
+- `reports/latest` symlink points to the most recent root session (protected by sticky bit).
+- Non-root users get `reports/latest-$USER` (e.g., `reports/latest-testuser`).
 
 ### Category 1: Web Application Scanning
 | Tool | Command | Output |
