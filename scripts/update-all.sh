@@ -195,13 +195,16 @@ update_apkhunt_build() {
 
 update_netexec_editable() {
   local repo_dir="${SECFORGE_ROOT}/tools/netexec"
+  local nxc_venv="${SECFORGE_ROOT}/venvs/netexec"
   if [[ ! -d "${repo_dir}" ]]; then
     return 1
   fi
-  if [[ ! -x "${SECFORGE_VENV}/bin/pip" ]]; then
+  if [[ ! -x "${nxc_venv}/bin/pip" ]]; then
+    sf_warn "NetExec dedicated venv missing at ${nxc_venv}; skipping update."
     return 1
   fi
-  "${SECFORGE_VENV}/bin/pip" install -e "${repo_dir}" >/dev/null 2>&1
+  "${nxc_venv}/bin/pip" install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
+  "${nxc_venv}/bin/pip" install -e "${repo_dir}" >/dev/null 2>&1
 }
 
 main() {

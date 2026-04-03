@@ -53,9 +53,10 @@ These decisions are locked to keep SecForge reliable for vibecoders (easy instal
 6. MobSF: Docker-only and optional
    - MobSF is optional and installed only if `docker` exists; otherwise skip with a clear message.
 
-7. Python tools: single venv at `/opt/secforge/venv/`
-   - Install all pip tools into one venv (`/opt/secforge/venv/`).
-   - `/opt/secforge/bin/` exposes them via wrappers/symlinks so users never deal with Python packaging.
+7. Python tools: primary venv at `/opt/secforge/venv/`
+   - Install most pip tools into the primary venv (`/opt/secforge/venv/`).
+   - Exception: NetExec uses a dedicated venv at `/opt/secforge/venvs/netexec/` to avoid dependency conflicts (it requires native C extensions and has conflicting transitive deps).
+   - `/opt/secforge/bin/` exposes all tools via wrappers/symlinks so users never deal with Python packaging.
 
 8. Versioning: “always latest” for v1
    - Use GitHub release downloads for `/opt/secforge/bin/` tools, `pip install -U` (venv), `git pull` for cloned tools, plus signature/template updates (Nuclei templates, ClamAV, rkhunter).
