@@ -48,6 +48,8 @@ main() {
   mark_tool_if_present "hashcat" "${SECFORGE_ROOT}/bin/hashcat"
 
   # NetExec: dedicated venv to avoid dependency conflicts with the shared venv.
+  # Needs build tools for native extensions (arc4, cryptography).
+  sf_apt_install python3-dev build-essential libffi-dev libssl-dev
   local nxc_venv="${SECFORGE_ROOT}/venvs/netexec"
   sf_git_clone_or_update "https://github.com/Pennyw0rth/NetExec.git" "${SECFORGE_ROOT}/tools/netexec"
   if [[ -d "${SECFORGE_ROOT}/tools/netexec" ]]; then
