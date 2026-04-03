@@ -47,15 +47,24 @@ main() {
   fi
   mark_tool_if_present "hashcat" "${SECFORGE_ROOT}/bin/hashcat"
 
-  # NetExec (best-effort). Upstream packaging varies; we clone + try to install into the venv.
+  # NetExec: dedicated venv to avoid dependency conflicts with the shared venv.
+  local nxc_venv="${SECFORGE_ROOT}/venvs/netexec"
   sf_git_clone_or_update "https://github.com/Pennyw0rth/NetExec.git" "${SECFORGE_ROOT}/tools/netexec"
   if [[ -d "${SECFORGE_ROOT}/tools/netexec" ]]; then
-    sf_log "Attempting to install NetExec into venv (best-effort)..."
-    "${SECFORGE_VENV}/bin/pip" install -e "${SECFORGE_ROOT}/tools/netexec" >/dev/null 2>&1 || sf_warn "NetExec install failed; leaving repo in tools/netexec for manual setup."
+    sf_log "Installing NetExec into dedicated venv (best-effort)..."
+    python3 -m venv "${nxc_venv}" 2>/dev/null || true
+    if [[ -x "${nxc_venv}/bin/pip" ]]; then
+      "${nxc_venv}/bin/pip" install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
+      "${nxc_venv}/bin/pip" install -e "${SECFORGE_ROOT}/tools/netexec" >/dev/null 2>&1 || sf_warn "NetExec install failed (best-effort; leaving repo for manual setup)."
+    fi
   fi
 
-  if [[ -x "${SECFORGE_VENV}/bin/nxc" ]]; then
-    sf_ln_sf "${SECFORGE_VENV}/bin/nxc" "${SECFORGE_ROOT}/bin/nxc"
+  if [[ -x "${nxc_venv}/bin/nxc" ]]; then
+    cat >"${SECFORGE_ROOT}/bin/nxc" <<EOF
+#!/usr/bin/env bash
+exec "${nxc_venv}/bin/nxc" "\$@"
+EOF
+    chmod 0755 "${SECFORGE_ROOT}/bin/nxc"
     mark_tool_if_present "netexec" "${SECFORGE_ROOT}/bin/nxc"
   elif command -v nxc >/dev/null 2>&1; then
     sf_ln_sf "$(command -v nxc)" "${SECFORGE_ROOT}/bin/nxc"

@@ -313,12 +313,14 @@ sf_github_select_linux_asset_url() {
     *) sf_die "Unsupported arch for GitHub asset selection: ${arch}" ;;
   esac
 
-  # Prefer assets that look like actual binaries/archives, not checksums/SBOM/signatures/sources.
+  # Prefer runnable archives (.tar.gz/.tgz/.zip), exclude packaging formats (.deb/.rpm/.apk)
+  # and metadata files (checksums/SBOM/signatures/source archives).
   sf_github_latest_release_json "${repo}" | jq -r --arg arch_re "${arch_re}" '
     .assets[]
     | select(.name | test("linux|Linux"; "i"))
     | select(.name | test($arch_re; "i"))
     | select(.name | test("sha256|checksum|checksums|sbom|signature|\\.sig$|\\.asc$|source|src|\\.txt$|\\.json$"; "i") | not)
+    | select(.name | test("\\.deb$|\\.rpm$|\\.apk$|\\.pkg\\.tar\\.(zst|xz|gz)$|\\.msi$"; "i") | not)
     | .browser_download_url
   ' | head -n1
 }

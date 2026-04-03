@@ -42,6 +42,11 @@ EOF
   fi
   mark_tool_if_present "jwt_tool" "${SECFORGE_ROOT}/bin/jwt_tool"
 
+  # Install jwt_tool dependencies into venv (best-effort)
+  if [[ -r "${SECFORGE_ROOT}/tools/jwt_tool/requirements.txt" ]]; then
+    sf_install_venv_packages "${SECFORGE_VENV}" -r "${SECFORGE_ROOT}/tools/jwt_tool/requirements.txt" || sf_warn "jwt_tool dependency install failed (continuing)."
+  fi
+
   # Kiterunner (kr)
   sf_install_github_release_binary "assetnote/kiterunner" "kr" "${SECFORGE_ROOT}/bin/kr" || sf_warn "Failed to install kiterunner (kr)"
   mark_tool_if_present "kiterunner" "${SECFORGE_ROOT}/bin/kr"

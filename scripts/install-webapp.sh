@@ -164,14 +164,21 @@ EOF
     sf_install_venv_packages "${SECFORGE_VENV}" -r "${SECFORGE_ROOT}/tools/corscanner/requirements.txt" || sf_warn "CORScanner dependency install failed (continuing)."
   fi
 
-  sf_install_venv_packages "${SECFORGE_VENV}" sqlmap commix || sf_warn "Failed to install one or more pip web tools"
+  sf_install_venv_packages "${SECFORGE_VENV}" sqlmap || sf_warn "Failed to install sqlmap"
   if [[ -x "${SECFORGE_VENV}/bin/sqlmap" ]]; then
     sf_ln_sf "${SECFORGE_VENV}/bin/sqlmap" "${SECFORGE_ROOT}/bin/sqlmap"
   fi
-  if [[ -x "${SECFORGE_VENV}/bin/commix" ]]; then
-    sf_ln_sf "${SECFORGE_VENV}/bin/commix" "${SECFORGE_ROOT}/bin/commix"
-  fi
   mark_tool_if_present "sqlmap" "${SECFORGE_ROOT}/bin/sqlmap"
+
+  # Commix: clone official repo (do NOT use PyPI "commix" which is an unrelated tool).
+  sf_git_clone_or_update "https://github.com/commixproject/commix.git" "${SECFORGE_ROOT}/tools/commix"
+  if [[ -r "${SECFORGE_ROOT}/tools/commix/commix.py" ]]; then
+    cat >"${SECFORGE_ROOT}/bin/commix" <<EOF
+#!/usr/bin/env bash
+exec "${SECFORGE_VENV}/bin/python" "${SECFORGE_ROOT}/tools/commix/commix.py" "\$@"
+EOF
+    chmod 0755 "${SECFORGE_ROOT}/bin/commix"
+  fi
   mark_tool_if_present "commix" "${SECFORGE_ROOT}/bin/commix"
 
   # Link Nikto/Wapiti if present (apt installs to system PATH; still expose via /opt/secforge/bin for consistency).
