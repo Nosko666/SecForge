@@ -27,13 +27,77 @@ This file is identical to `AGENTS.md` so both Claude Code and Codex can orchestr
    - **Tier 2** too (active/aggressive; requires explicit opt-in).
 
 5. Run system discovery (don’t ask questions the system can answer):
-   - `/opt/secforge/scripts/system-check.sh | jq .`
+   - `secforge status` (or `/opt/secforge/scripts/system-check.sh | jq .`)
    - Summarize in plain English: Ubuntu version, arch, Python version, Docker present, RAM/disk, installed SecForge categories.
 
 6. If required tools are missing for the user’s goal:
    - Propose the smallest install that achieves the goal.
    - Explain risks in plain English.
    - Ask permission before installing/updating anything.
+
+## v2 CLI Workflow (preferred over raw scripts)
+
+Use the `secforge` CLI for all operations. It dispatches to the correct scripts/modules.
+
+### Scanning
+```bash
+secforge scan example.com              # Quick Tier-1 scan
+secforge scan --full example.com       # Full scan (Tier 1 + Tier 2 opt-in)
+```
+
+### After a scan — present results as fix packs
+Read `findings.json` which now contains `findings[]`, `clusters[]`, `fix_packs[]`, and `summary`.
+
+Present findings as fix packs (NOT raw findings):
+```
+"You have 47 findings grouped into 8 fix packs:
+
+🔴 #1 Injection Prevention (critical, 3 findings)
+🟠 #2 HTTP Header Hardening (high, 12 findings, easy fix)
+🟠 #3 Secrets Exposure (high, 4 findings)
+🟡 #4 TLS/SSL Hardening (medium, 6 findings)
+...
+
+Want me to start fixing? I’ll go #1 first."
+```
+
+### Fixing — use export modes
+```bash
+secforge export --mode fix-pack --pack http-header-hardening  # Get fix instructions
+secforge export --mode quick-fix --finding SF-003              # Fix one finding
+secforge export --mode patch --pack tls-hardening              # Generate diffs
+secforge export --mode explain --finding SF-001                # Plain English explanation
+secforge export --mode full-plan                               # Full prioritized plan
+```
+
+Read the export output and use it to generate fixes. Each export includes:
+- Front-matter with target, system info, and safety rules
+- Fix direction, verification commands, rollback instructions
+- "What might break" warnings
+
+### After applying a fix — verify
+```bash
+secforge verify --finding SF-001 --run      # Run verification check
+secforge verify --pack FP-http-header-hardening --run  # Verify all in pack
+```
+
+### After rescan — show what changed
+```bash
+secforge scan example.com                   # Rescan
+secforge diff                               # What changed since last scan
+```
+Present: "You fixed 5 issues. 3 are still open. 1 came back."
+
+### Fix application — always ask user
+For each fix pack, offer two options:
+1. **"Show me" (safer):** Generate exact commands/diffs, user copy-pastes
+2. **"Apply it" (faster):** Apply with backup + verify + rollback ready
+
+For server hardening (SSH/UFW/fail2ban), follow the lockout prevention protocol.
+
+### Reference fix packs by FP- ID
+Use `FP-http-header-hardening`, `FP-tls-hardening`, etc. when discussing fixes.
+Explain priority reasoning: "This pack scored 82 (high) because it’s internet-exposed and confirmed by 3 tools."
 
 ## System Discovery & Setup Assistant (first run and anytime)
 
