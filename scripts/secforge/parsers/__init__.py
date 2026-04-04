@@ -125,7 +125,19 @@ def _import_parsers():
         "secforge.parsers.nmap",
         "secforge.parsers.testssl",
         "secforge.parsers.wafw00f",
-        # More parsers added in Step 6
+        "secforge.parsers.zap",
+        "secforge.parsers.ffuf",
+        "secforge.parsers.web_scanners",
+        "secforge.parsers.ssh_audit",
+        "secforge.parsers.trivy",
+        "secforge.parsers.secrets",
+        "secforge.parsers.dependencies",
+        "secforge.parsers.credentials",
+        "secforge.parsers.discovery",
+        "secforge.parsers.emaildns",
+        "secforge.parsers.mysql",
+        "secforge.parsers.stripe_check",
+        "secforge.parsers.network",
     ]
     for mod_name in parser_modules:
         try:
