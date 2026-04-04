@@ -10,8 +10,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+# v2: try importing shared normalize module; fall back to inline definitions.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from secforge.normalize import (
+        SEVERITY_ORDER, utc_now_iso, truncate, redact_text,
+        normalize_severity, severity_max, normalize_url,
+        normalize_title, infer_cwe_owasp,
+    )
+    _V2_NORMALIZE = True
+except ImportError:
+    _V2_NORMALIZE = False
 
-SEVERITY_ORDER: Dict[str, int] = {
+# v1 inline definitions below. If _V2_NORMALIZE is True, the imports above
+# already defined these names and the inline defs below are harmless redefinitions
+# that Python will simply override. This keeps the file working both ways.
+
+SEVERITY_ORDER: Dict[str, int] = {  # type: ignore[no-redef]
     "CRITICAL": 5,
     "HIGH": 4,
     "MEDIUM": 3,
