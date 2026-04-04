@@ -22,3 +22,7 @@ bin/*
 # Python noise
 __pycache__/
 *.pyc
+
+# Internal planning docs (not part of the product)
+implementationplan.md
+conversationsummary.md
