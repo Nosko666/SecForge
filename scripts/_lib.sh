@@ -215,7 +215,8 @@ sf_ensure_runtime_layout() {
     "${secforge_root}/tools" \
     "${secforge_root}/wordlists" \
     "${secforge_root}/bin" \
-    "${secforge_root}/logs"
+    "${secforge_root}/logs" \
+    "${secforge_root}/state"
 
   # Keep code/scripts root-owned; allow non-root scans to write only where needed.
   chown root:root "${secforge_root}" "${secforge_root}/bin" "${secforge_root}/logs" 2>/dev/null || true
@@ -228,6 +229,16 @@ sf_ensure_runtime_layout() {
 
   chown -R root:root "${secforge_root}/tools" "${secforge_root}/wordlists" 2>/dev/null || true
   chmod 0755 "${secforge_root}/tools" "${secforge_root}/wordlists"
+
+  # State DB directory: sticky + setgid, group-writable, not world-accessible.
+  chown root:"${group_name}" "${secforge_root}/state" 2>/dev/null || true
+  chmod 3770 "${secforge_root}/state" 2>/dev/null || true
+  # Create empty DB file with correct perms if it doesn't exist.
+  if [[ ! -f "${secforge_root}/state/secforge.db" ]]; then
+    touch "${secforge_root}/state/secforge.db" 2>/dev/null || true
+    chown root:"${group_name}" "${secforge_root}/state/secforge.db" 2>/dev/null || true
+    chmod 0660 "${secforge_root}/state/secforge.db" 2>/dev/null || true
+  fi
 }
 
 sf_ensure_config_files() {
