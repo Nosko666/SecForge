@@ -1,0 +1,114 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "description": "cluster_id -> metadata. Used by cluster.py to build cluster objects and by fix_packs.py for remediation defaults."
+  },
+  "http-header-hardening": {
+    "title": "HTTP Header Hardening",
+    "description": "Your server is missing protective browser headers that prevent clickjacking, XSS, and data injection.",
+    "candidate_fix_surfaces": ["nginx", "apache", "caddy", "app-middleware", "cdn"],
+    "remediation_difficulty": "easy"
+  },
+  "tls-hardening": {
+    "title": "TLS/SSL Hardening",
+    "description": "Your TLS/SSL configuration has weaknesses that could allow attackers to intercept or downgrade encrypted connections.",
+    "candidate_fix_surfaces": ["nginx", "apache", "caddy", "load-balancer"],
+    "remediation_difficulty": "medium"
+  },
+  "auth-hardening": {
+    "title": "Authentication Hardening",
+    "description": "Your authentication system has weaknesses that could allow brute force attacks, session hijacking, or credential theft.",
+    "candidate_fix_surfaces": ["app-middleware", "app-code", "auth-service"],
+    "remediation_difficulty": "medium"
+  },
+  "xss-protection": {
+    "title": "Cross-Site Scripting Protection",
+    "description": "Your application has input/output handling flaws that allow attackers to inject malicious scripts into pages viewed by other users.",
+    "candidate_fix_surfaces": ["app-code", "app-middleware", "template-engine"],
+    "remediation_difficulty": "medium"
+  },
+  "injection-prevention": {
+    "title": "Injection Prevention",
+    "description": "Your application passes user input into commands, queries, or templates without proper sanitization, allowing attackers to execute arbitrary code.",
+    "candidate_fix_surfaces": ["app-code", "database-layer", "app-middleware"],
+    "remediation_difficulty": "medium"
+  },
+  "secrets-exposure": {
+    "title": "Secrets Exposure",
+    "description": "API keys, tokens, or credentials have been found in your code, git history, or configuration files.",
+    "candidate_fix_surfaces": ["app-code", "git-history", "config-files", "secrets-manager"],
+    "remediation_difficulty": "medium"
+  },
+  "dependency-updates": {
+    "title": "Dependency Updates",
+    "description": "Your project uses packages with known security vulnerabilities that have available fixes.",
+    "candidate_fix_surfaces": ["package-manifest", "lockfile"],
+    "remediation_difficulty": "easy"
+  },
+  "network-hardening": {
+    "title": "Network Hardening",
+    "description": "Your server exposes ports or services that may not be necessary and could increase your attack surface.",
+    "candidate_fix_surfaces": ["firewall", "service-config"],
+    "remediation_difficulty": "easy"
+  },
+  "server-hardening": {
+    "title": "Server Hardening",
+    "description": "Your server configuration has security weaknesses in SSH, services, or system settings that should be tightened.",
+    "candidate_fix_surfaces": ["ssh-config", "systemd", "sysctl", "firewall", "os-config"],
+    "remediation_difficulty": "medium"
+  },
+  "dns-email-security": {
+    "title": "DNS & Email Security",
+    "description": "Your domain is missing DNS security records (SPF, DMARC, DKIM, DNSSEC) that protect against email spoofing and DNS attacks.",
+    "candidate_fix_surfaces": ["dns-provider", "email-service"],
+    "remediation_difficulty": "easy"
+  },
+  "payment-security": {
+    "title": "Payment Security",
+    "description": "Your payment pages have security issues that could expose cardholder data or allow skimming attacks.",
+    "candidate_fix_surfaces": ["app-code", "nginx", "cdn", "payment-provider"],
+    "remediation_difficulty": "medium"
+  },
+  "exposure-cleanup": {
+    "title": "Sensitive File Exposure",
+    "description": "Sensitive files or directories (.env, .git, backups, admin panels) are publicly accessible on your server.",
+    "candidate_fix_surfaces": ["nginx", "apache", "app-deployment"],
+    "remediation_difficulty": "easy"
+  },
+  "cors-hardening": {
+    "title": "CORS Hardening",
+    "description": "Your CORS configuration allows cross-origin requests that could lead to data theft from authenticated sessions.",
+    "candidate_fix_surfaces": ["nginx", "app-middleware", "api-gateway"],
+    "remediation_difficulty": "easy"
+  },
+  "database-hardening": {
+    "title": "Database Hardening",
+    "description": "Your database has configuration weaknesses like anonymous accounts, remote root access, or missing encryption.",
+    "candidate_fix_surfaces": ["database-config", "database-users"],
+    "remediation_difficulty": "medium"
+  },
+  "mobile-security": {
+    "title": "Mobile App Security",
+    "description": "Your mobile application has security issues like hardcoded secrets, exported components, or insecure configurations.",
+    "candidate_fix_surfaces": ["android-manifest", "app-code", "build-config"],
+    "remediation_difficulty": "medium"
+  },
+  "compliance": {
+    "title": "Compliance",
+    "description": "Your system has configurations that do not meet common compliance standards (CIS, PCI DSS, etc.).",
+    "candidate_fix_surfaces": ["os-config", "service-config", "documentation"],
+    "remediation_difficulty": "hard"
+  },
+  "reconnaissance": {
+    "title": "Reconnaissance (Informational)",
+    "description": "Discovery-phase information about your infrastructure. Not vulnerabilities, but useful context for targeted testing.",
+    "candidate_fix_surfaces": [],
+    "remediation_difficulty": "none"
+  },
+  "other": {
+    "title": "Other Findings",
+    "description": "Findings that don't match a known category. Review individually.",
+    "candidate_fix_surfaces": [],
+    "remediation_difficulty": "unknown"
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "description": "Priority scoring weights. Override with /opt/secforge/config/priority-weights.json."
+  },
+  "severity": {
+    "weight": 35,
+    "values": {"critical": 35, "high": 28, "medium": 18, "low": 8, "info": 2}
+  },
+  "internet_exposure": {
+    "weight": 20,
+    "values": {"public": 20, "internal": 8, "localhost": 2}
+  },
+  "confidence": {
+    "weight": 15,
+    "values": {"confirmed": 15, "likely": 10, "possible": 4}
+  },
+  "ease_of_fix": {
+    "weight": 10,
+    "values": {"easy": 10, "medium": 6, "hard": 2, "none": 0, "unknown": 5}
+  },
+  "multi_tool": {
+    "weight": 8,
+    "values": {"3+": 8, "2": 5, "1": 2}
+  },
+  "blast_radius": {
+    "weight": 7,
+    "values": {"server_wide": 7, "multi_endpoint": 4, "single_endpoint": 1}
+  },
+  "age": {
+    "weight": 5,
+    "values": {"90d+": 5, "30d+": 3, "fresh": 1, "reopened_bonus": 3}
+  },
+  "labels": {
+    "critical": {"min": 90},
+    "high": {"min": 70},
+    "medium": {"min": 40},
+    "low": {"min": 1}
+  }
+}

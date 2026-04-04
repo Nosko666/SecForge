@@ -1,0 +1,106 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "description": "issue_key -> metadata. Parsers map tool output to issue_keys; this catalog provides enrichment (cluster, title, category, fingerprint type)."
+  },
+  "headers.missing_csp": {"cluster_id": "http-header-hardening", "normalized_title": "missing content-security-policy header", "category": "headers", "fingerprint_type": "web_server_level"},
+  "headers.missing_hsts": {"cluster_id": "http-header-hardening", "normalized_title": "missing strict-transport-security header", "category": "headers", "fingerprint_type": "web_server_level"},
+  "headers.missing_xfo": {"cluster_id": "http-header-hardening", "normalized_title": "missing x-frame-options header", "category": "headers", "fingerprint_type": "web_server_level"},
+  "headers.missing_xcto": {"cluster_id": "http-header-hardening", "normalized_title": "missing x-content-type-options header", "category": "headers", "fingerprint_type": "web_server_level"},
+  "headers.missing_xpb": {"cluster_id": "http-header-hardening", "normalized_title": "x-powered-by header leaks server info", "category": "headers", "fingerprint_type": "web_server_level"},
+  "headers.csp_unsafe_inline": {"cluster_id": "http-header-hardening", "normalized_title": "csp allows unsafe-inline scripts", "category": "headers", "fingerprint_type": "web_server_level"},
+  "headers.missing_referrer_policy": {"cluster_id": "http-header-hardening", "normalized_title": "missing referrer-policy header", "category": "headers", "fingerprint_type": "web_server_level"},
+  "headers.missing_permissions_policy": {"cluster_id": "http-header-hardening", "normalized_title": "missing permissions-policy header", "category": "headers", "fingerprint_type": "web_server_level"},
+
+  "cookies.missing_secure": {"cluster_id": "http-header-hardening", "normalized_title": "cookies missing secure flag", "category": "cookies", "fingerprint_type": "web_server_level"},
+  "cookies.missing_httponly": {"cluster_id": "http-header-hardening", "normalized_title": "cookies missing httponly flag", "category": "cookies", "fingerprint_type": "web_server_level"},
+  "cookies.missing_samesite": {"cluster_id": "http-header-hardening", "normalized_title": "cookies missing samesite attribute", "category": "cookies", "fingerprint_type": "web_server_level"},
+
+  "tls.weak_cipher": {"cluster_id": "tls-hardening", "normalized_title": "weak tls cipher suite", "category": "tls", "fingerprint_type": "web_server_level"},
+  "tls.weak_protocol": {"cluster_id": "tls-hardening", "normalized_title": "weak tls protocol version", "category": "tls", "fingerprint_type": "web_server_level"},
+  "tls.cert_expiry_soon": {"cluster_id": "tls-hardening", "normalized_title": "tls certificate expiring soon", "category": "tls", "fingerprint_type": "web_server_level"},
+  "tls.no_forward_secrecy": {"cluster_id": "tls-hardening", "normalized_title": "tls missing forward secrecy", "category": "tls", "fingerprint_type": "web_server_level"},
+  "tls.insecure_renegotiation": {"cluster_id": "tls-hardening", "normalized_title": "tls insecure renegotiation", "category": "tls", "fingerprint_type": "web_server_level"},
+  "tls.breach_vulnerable": {"cluster_id": "tls-hardening", "normalized_title": "breach compression attack possible", "category": "tls", "fingerprint_type": "web_server_level"},
+  "tls.http_only_site": {"cluster_id": "tls-hardening", "normalized_title": "site accessible over http only", "category": "tls", "fingerprint_type": "web_server_level"},
+
+  "xss.reflected": {"cluster_id": "xss-protection", "normalized_title": "reflected cross-site scripting", "category": "xss", "fingerprint_type": "web_endpoint_level"},
+  "xss.stored": {"cluster_id": "xss-protection", "normalized_title": "stored cross-site scripting", "category": "xss", "fingerprint_type": "web_endpoint_level"},
+  "xss.dom": {"cluster_id": "xss-protection", "normalized_title": "dom-based cross-site scripting", "category": "xss", "fingerprint_type": "web_endpoint_level"},
+
+  "sqli.generic": {"cluster_id": "injection-prevention", "normalized_title": "sql injection", "category": "sqli", "fingerprint_type": "web_endpoint_level"},
+  "sqli.blind": {"cluster_id": "injection-prevention", "normalized_title": "blind sql injection", "category": "sqli", "fingerprint_type": "web_endpoint_level"},
+  "injection.command": {"cluster_id": "injection-prevention", "normalized_title": "os command injection", "category": "injection", "fingerprint_type": "web_endpoint_level"},
+  "injection.ssti": {"cluster_id": "injection-prevention", "normalized_title": "server-side template injection", "category": "injection", "fingerprint_type": "web_endpoint_level"},
+  "injection.ssrf": {"cluster_id": "injection-prevention", "normalized_title": "server-side request forgery", "category": "injection", "fingerprint_type": "web_endpoint_level"},
+  "injection.xxe": {"cluster_id": "injection-prevention", "normalized_title": "xml external entity injection", "category": "injection", "fingerprint_type": "web_endpoint_level"},
+  "injection.lfi": {"cluster_id": "injection-prevention", "normalized_title": "local file inclusion", "category": "injection", "fingerprint_type": "web_endpoint_level"},
+
+  "auth.missing_csrf": {"cluster_id": "auth-hardening", "normalized_title": "missing anti-csrf tokens", "category": "auth", "fingerprint_type": "web_endpoint_level"},
+  "auth.weak_password_policy": {"cluster_id": "auth-hardening", "normalized_title": "weak password policy", "category": "auth", "fingerprint_type": "web_server_level"},
+  "auth.brute_force_possible": {"cluster_id": "auth-hardening", "normalized_title": "brute force login possible", "category": "auth", "fingerprint_type": "web_server_level"},
+  "auth.credentials_found": {"cluster_id": "auth-hardening", "normalized_title": "valid credentials discovered", "category": "auth", "fingerprint_type": "web_server_level"},
+  "auth.insecure_jwt": {"cluster_id": "auth-hardening", "normalized_title": "insecure jwt configuration", "category": "auth", "fingerprint_type": "web_server_level"},
+
+  "secrets.aws_key": {"cluster_id": "secrets-exposure", "normalized_title": "aws access key exposed", "category": "secrets", "fingerprint_type": "code_level"},
+  "secrets.stripe_key": {"cluster_id": "secrets-exposure", "normalized_title": "stripe api key exposed", "category": "secrets", "fingerprint_type": "code_level"},
+  "secrets.github_token": {"cluster_id": "secrets-exposure", "normalized_title": "github token exposed", "category": "secrets", "fingerprint_type": "code_level"},
+  "secrets.generic": {"cluster_id": "secrets-exposure", "normalized_title": "hardcoded secret detected", "category": "secrets", "fingerprint_type": "code_level"},
+  "secrets.private_key": {"cluster_id": "secrets-exposure", "normalized_title": "private key exposed", "category": "secrets", "fingerprint_type": "code_level"},
+
+  "exposure.env_file": {"cluster_id": "exposure-cleanup", "normalized_title": "exposed .env file", "category": "exposure", "fingerprint_type": "web_server_level"},
+  "exposure.git_directory": {"cluster_id": "exposure-cleanup", "normalized_title": "exposed .git directory", "category": "exposure", "fingerprint_type": "web_server_level"},
+  "exposure.directory_listing": {"cluster_id": "exposure-cleanup", "normalized_title": "directory listing enabled", "category": "exposure", "fingerprint_type": "web_server_level"},
+  "exposure.backup_file": {"cluster_id": "exposure-cleanup", "normalized_title": "backup file accessible", "category": "exposure", "fingerprint_type": "web_server_level"},
+  "exposure.admin_panel": {"cluster_id": "exposure-cleanup", "normalized_title": "admin panel publicly accessible", "category": "exposure", "fingerprint_type": "web_server_level"},
+
+  "misconfig.http_trace_enabled": {"cluster_id": "server-hardening", "normalized_title": "http trace method enabled", "category": "misconfig", "fingerprint_type": "web_server_level"},
+  "misconfig.http_put_enabled": {"cluster_id": "server-hardening", "normalized_title": "http put method enabled", "category": "misconfig", "fingerprint_type": "web_server_level"},
+  "misconfig.http_delete_enabled": {"cluster_id": "server-hardening", "normalized_title": "http delete method enabled", "category": "misconfig", "fingerprint_type": "web_server_level"},
+  "misconfig.missing_clickjacking_protection": {"cluster_id": "http-header-hardening", "normalized_title": "missing clickjacking protection", "category": "misconfig", "fingerprint_type": "web_server_level"},
+
+  "deps.vulnerable_package": {"cluster_id": "dependency-updates", "normalized_title": "vulnerable dependency detected", "category": "deps", "fingerprint_type": "package_level"},
+  "deps.outdated_package": {"cluster_id": "dependency-updates", "normalized_title": "outdated dependency", "category": "deps", "fingerprint_type": "package_level"},
+
+  "network.open_port": {"cluster_id": "network-hardening", "normalized_title": "open port discovered", "category": "network", "fingerprint_type": "host_level"},
+  "network.ssh_weak_config": {"cluster_id": "server-hardening", "normalized_title": "weak ssh configuration", "category": "hardening", "fingerprint_type": "host_level"},
+
+  "dns.missing_spf": {"cluster_id": "dns-email-security", "normalized_title": "missing spf record", "category": "dns", "fingerprint_type": "web_server_level"},
+  "dns.missing_dmarc": {"cluster_id": "dns-email-security", "normalized_title": "missing dmarc record", "category": "dns", "fingerprint_type": "web_server_level"},
+  "dns.missing_dkim": {"cluster_id": "dns-email-security", "normalized_title": "dkim selector not found", "category": "dns", "fingerprint_type": "web_server_level"},
+  "dns.missing_dnssec": {"cluster_id": "dns-email-security", "normalized_title": "dnssec not detected", "category": "dns", "fingerprint_type": "web_server_level"},
+  "dns.zone_transfer_allowed": {"cluster_id": "dns-email-security", "normalized_title": "dns zone transfer allowed", "category": "dns", "fingerprint_type": "web_server_level"},
+  "dns.spf_not_strict": {"cluster_id": "dns-email-security", "normalized_title": "spf policy is not strict", "category": "dns", "fingerprint_type": "web_server_level"},
+  "dns.dmarc_not_enforcing": {"cluster_id": "dns-email-security", "normalized_title": "dmarc policy is not enforcing", "category": "dns", "fingerprint_type": "web_server_level"},
+
+  "hardening.ssh_password_auth": {"cluster_id": "server-hardening", "normalized_title": "ssh allows password authentication", "category": "hardening", "fingerprint_type": "host_level"},
+  "hardening.ssh_root_login": {"cluster_id": "server-hardening", "normalized_title": "ssh allows root login", "category": "hardening", "fingerprint_type": "host_level"},
+  "hardening.aide_not_initialized": {"cluster_id": "server-hardening", "normalized_title": "aide database not initialized", "category": "hardening", "fingerprint_type": "host_level"},
+  "hardening.unattended_upgrades_off": {"cluster_id": "server-hardening", "normalized_title": "automatic security updates disabled", "category": "hardening", "fingerprint_type": "host_level"},
+  "hardening.systemd_service_unsafe": {"cluster_id": "server-hardening", "normalized_title": "systemd service has unsafe security settings", "category": "hardening", "fingerprint_type": "config_level"},
+
+  "payment.raw_card_fields": {"cluster_id": "payment-security", "normalized_title": "raw card input fields in html", "category": "payment", "fingerprint_type": "web_server_level"},
+  "payment.missing_csp_on_checkout": {"cluster_id": "payment-security", "normalized_title": "missing csp on payment pages", "category": "payment", "fingerprint_type": "web_server_level"},
+  "payment.https_not_enforced": {"cluster_id": "payment-security", "normalized_title": "https not enforced on payment pages", "category": "payment", "fingerprint_type": "web_server_level"},
+  "payment.third_party_scripts": {"cluster_id": "payment-security", "normalized_title": "third-party scripts on payment pages", "category": "payment", "fingerprint_type": "web_server_level"},
+  "payment.missing_sri": {"cluster_id": "payment-security", "normalized_title": "external scripts missing subresource integrity", "category": "payment", "fingerprint_type": "web_server_level"},
+
+  "cors.misconfigured": {"cluster_id": "cors-hardening", "normalized_title": "cors misconfiguration detected", "category": "cors", "fingerprint_type": "web_server_level"},
+
+  "database.anonymous_accounts": {"cluster_id": "database-hardening", "normalized_title": "mysql anonymous accounts present", "category": "database", "fingerprint_type": "host_level"},
+  "database.remote_root": {"cluster_id": "database-hardening", "normalized_title": "mysql remote root access enabled", "category": "database", "fingerprint_type": "host_level"},
+  "database.no_password_users": {"cluster_id": "database-hardening", "normalized_title": "mysql users without passwords", "category": "database", "fingerprint_type": "host_level"},
+  "database.no_ssl_required": {"cluster_id": "database-hardening", "normalized_title": "mysql secure transport not required", "category": "database", "fingerprint_type": "host_level"},
+  "database.super_priv": {"cluster_id": "database-hardening", "normalized_title": "mysql non-root users with super privileges", "category": "database", "fingerprint_type": "host_level"},
+  "database.test_db_present": {"cluster_id": "database-hardening", "normalized_title": "mysql test database present", "category": "database", "fingerprint_type": "host_level"},
+
+  "mobile.exported_activity": {"cluster_id": "mobile-security", "normalized_title": "exported activity without permission", "category": "mobile", "fingerprint_type": "apk_level"},
+  "mobile.debuggable": {"cluster_id": "mobile-security", "normalized_title": "app is debuggable", "category": "mobile", "fingerprint_type": "apk_level"},
+  "mobile.cleartext_traffic": {"cluster_id": "mobile-security", "normalized_title": "cleartext traffic allowed", "category": "mobile", "fingerprint_type": "apk_level"},
+
+  "discovery.subdomains_found": {"cluster_id": "reconnaissance", "normalized_title": "subdomains discovered", "category": "discovery", "fingerprint_type": "web_server_level"},
+  "discovery.live_hosts_found": {"cluster_id": "reconnaissance", "normalized_title": "live hosts discovered", "category": "discovery", "fingerprint_type": "web_server_level"},
+  "discovery.paths_found": {"cluster_id": "reconnaissance", "normalized_title": "content discovery results", "category": "discovery", "fingerprint_type": "web_server_level"},
+  "discovery.waf_detected": {"cluster_id": "reconnaissance", "normalized_title": "waf detection result", "category": "discovery", "fingerprint_type": "web_server_level"},
+  "discovery.tech_fingerprint": {"cluster_id": "reconnaissance", "normalized_title": "technology fingerprint", "category": "discovery", "fingerprint_type": "web_server_level"}
+}
