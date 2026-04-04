@@ -2051,6 +2051,197 @@ def try_export_sarif(session_dir: Path, findings_json: Path) -> None:
         return
 
 
+def _run_v2_pipeline(session_dir: Path) -> Optional[Path]:
+    """Run the v2 pipeline. Returns path to findings.json or None on failure."""
+    try:
+        from secforge.parsers import parse_session
+        from secforge.issue_key import IssueKeyResolver
+        from secforge.fingerprint import compute_fingerprint
+        from secforge.dedup import deduplicate
+        from secforge.cluster import ClusterEngine
+        from secforge.score import PriorityScorer
+        from secforge.fix_packs import FixPackGenerator
+        from secforge.fix_location import FixLocationInference
+        from secforge.state import StateDB
+        from secforge.normalize import utc_now_iso as v2_utc_now
+
+        catalog_dir = Path(__file__).parent / "secforge" / ".." / ".." / "catalog"
+        catalog_dir = catalog_dir.resolve()
+        if not catalog_dir.exists():
+            # Try relative to script location
+            catalog_dir = Path(__file__).resolve().parent.parent / "catalog"
+
+        # 1. Read scan manifest (fallback: infer from output files)
+        manifest_path = session_dir / "scan_manifest.json"
+        tools_run_list: List[str] = []
+        tools_failed_list: List[str] = []
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                tools_run_list = manifest.get("tools_run", [])
+                tools_failed_list = manifest.get("tools_failed", [])
+            except Exception:
+                pass
+        tools_succeeded = set(tools_run_list) - set(tools_failed_list)
+
+        # Build context from preflight
+        preflight: Dict[str, Any] = {}
+        pf_path = session_dir / "preflight.json"
+        if pf_path.exists():
+            try:
+                preflight = json.loads(pf_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        target_host = str(preflight.get("target_host") or preflight.get("target_input") or "")
+        target_url = str(preflight.get("target_url") or "")
+        scan_date = str(preflight.get("timestamp_utc") or "") or v2_utc_now()
+        profile = str(preflight.get("profile") or "")
+        session_id = session_dir.name
+
+        # 2. Parse all tool outputs
+        v2_findings = parse_session(session_dir)
+
+        # 3. Resolve issue_key + enrich
+        resolver = IssueKeyResolver(catalog_dir)
+        for f in v2_findings:
+            ik = f.get("issue_key", "")
+            if not ik or not resolver.validate(ik):
+                # Use fallback with tool-specific rule_id if available
+                tool = f.get("tool", "")
+                rule_id = f.get("_tool_rule_id")
+                title = f.get("title", "")
+                ik = resolver.fallback(tool, rule_id, title)
+                f["issue_key"] = ik
+
+            # Enrich from catalog
+            meta = resolver.enrich(ik)
+            if not f.get("normalized_title"):
+                f["normalized_title"] = meta.get("normalized_title", ik)
+            if f.get("cluster_id", "other") == "other":
+                f["cluster_id"] = meta.get("cluster_id", "other")
+            f["_fingerprint_type"] = meta.get("fingerprint_type", "web_server_level")
+            f["_enriched_cluster_id"] = meta.get("cluster_id", "other")
+
+        # 4. Compute fingerprints
+        for f in v2_findings:
+            f["fingerprint"] = compute_fingerprint(f)
+
+        # 5. Dedup (Level 2 cross-tool)
+        deduped = deduplicate(v2_findings)
+
+        # 6. Cluster
+        ce = ClusterEngine(catalog_dir)
+        ce.assign_clusters(deduped)
+        cluster_objects = ce.build_cluster_objects(deduped)
+
+        # 7. Score
+        ps = PriorityScorer(catalog_dir)
+        ps.score_all(deduped)
+
+        # 8. Fix location baseline
+        fli = FixLocationInference(catalog_dir)
+        fli.assign_fix_locations(deduped)
+
+        # 9. Fix packs
+        fpg = FixPackGenerator(catalog_dir)
+        fix_packs = fpg.generate(deduped, cluster_objects)
+        for pack in fix_packs:
+            # Score packs
+            pack_findings = [f for f in deduped if f.get("cluster_id") == pack["fix_pack_id"].replace("FP-", "")]
+            ps.score_pack(pack, pack_findings)
+
+        # 10. Sort + assign SF-### IDs
+        sev_order = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}
+        deduped.sort(key=lambda f: (
+            -sev_order.get(f.get("severity", "info"), 0),
+            -(f.get("priority_score") or 0),
+            f.get("category", ""),
+            f.get("title", ""),
+        ))
+        for idx, f in enumerate(deduped, start=1):
+            f["id"] = f"SF-{idx:03d}"
+
+        # Rebuild cluster finding_ids after sort/ID assignment
+        for cluster in cluster_objects:
+            cid = cluster["cluster_id"]
+            cluster["finding_ids"] = [f["id"] for f in deduped if f.get("cluster_id") == cid]
+        for pack in fix_packs:
+            cid = pack["fix_pack_id"].replace("FP-", "")
+            pack["finding_ids"] = [f["id"] for f in deduped if f.get("cluster_id") == cid]
+
+        # Compute summary
+        summary = {
+            "total_findings": len(deduped),
+            "severity_counts": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+            "total_clusters": len(cluster_objects),
+            "total_fix_packs": len(fix_packs),
+            "top_fix_packs": [
+                {"fix_pack_id": p["fix_pack_id"], "title": p["title"],
+                 "priority_score": p.get("priority_score", 0),
+                 "priority_label": p.get("priority_label", "low"),
+                 "total": p["total"]}
+                for p in fix_packs[:5]
+            ],
+            "critical_callouts": [
+                {"id": f["id"], "title": f["title"], "fingerprint": f["fingerprint"]}
+                for f in deduped if f.get("severity") == "critical"
+            ][:5],
+            "tools_run": sorted(set(f.get("tool", "") for f in deduped if f.get("tool"))),
+            "scan_duration_seconds": None,
+        }
+        for f in deduped:
+            s = f.get("severity", "info")
+            summary["severity_counts"][s] = summary["severity_counts"].get(s, 0) + 1
+
+        # Build output dict — strip internal fields
+        out_findings = []
+        for f in deduped:
+            clean = {k: v for k, v in f.items() if not k.startswith("_")}
+            out_findings.append(clean)
+
+        out = {
+            "scan_date": scan_date,
+            "target": target_host,
+            "scan_profile": profile,
+            "summary": summary,
+            "findings": out_findings,
+            "clusters": cluster_objects,
+            "fix_packs": fix_packs,
+        }
+
+        # 11. Write atomically (temp file + rename)
+        out_path = session_dir / "findings.json"
+        tmp_path = session_dir / ".findings.json.tmp"
+        tmp_path.write_text(json.dumps(out, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+        tmp_path.rename(out_path)
+
+        # 12. State DB persist (best-effort, skip if root)
+        try:
+            project_id = target_host or "default"
+            state = StateDB()
+            if state.open():
+                state.ensure_project(project_id)
+                state.record_scan(
+                    scan_id=session_id, project_id=project_id,
+                    target=target_host, scan_date=scan_date, profile=profile,
+                    tools_run=tools_run_list, tools_failed=tools_failed_list,
+                    total_findings=len(deduped),
+                    summary_json=json.dumps(summary),
+                    session_path=str(session_dir),
+                )
+                state.upsert_findings(deduped, project_id, session_id, tools_succeeded)
+                state.close()
+        except Exception:
+            pass  # State DB is best-effort
+
+        return out_path
+
+    except Exception as exc:
+        print(f"[secforge] WARN: v2 pipeline failed ({type(exc).__name__}: {exc}), falling back to v1.", file=sys.stderr)
+        return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Merge SecForge tool reports into findings.json (and optional findings.sarif).")
     parser.add_argument("session_dir", help="Path to /opt/secforge/reports/<SESSION>/")
@@ -2061,9 +2252,15 @@ def main() -> int:
         print(f"ERROR: session_dir not found: {session_dir}", file=sys.stderr)
         return 2
 
-    tools_run, findings, preflight = collect_tools_and_findings(session_dir)
-    merged = dedupe_findings(findings)
-    findings_json = write_findings_json(session_dir, tools_run, merged, preflight)
+    # Try v2 pipeline first; fall back to v1 on ANY exception.
+    findings_json = _run_v2_pipeline(session_dir)
+
+    if findings_json is None:
+        # v1 fallback
+        tools_run, findings, preflight = collect_tools_and_findings(session_dir)
+        merged = dedupe_findings(findings)
+        findings_json = write_findings_json(session_dir, tools_run, merged, preflight)
+
     try_export_sarif(session_dir, findings_json)
     return 0
 
