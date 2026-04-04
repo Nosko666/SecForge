@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# SecForge CLI — one command to rule them all.
+# Dispatches to scan scripts, v2 Python modules, and utility commands.
+set -euo pipefail
+
+SECFORGE_ROOT="${SECFORGE_ROOT:-/opt/secforge}"
+SCRIPT_DIR="${SECFORGE_ROOT}/scripts"
+PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}"
+export PYTHONPATH
+export PYTHONDONTWRITEBYTECODE=1
+
+sf_die() { printf '[secforge] ERROR: %s\n' "$*" >&2; exit 1; }
+
+show_help() {
+  cat <<'EOF'
+SecForge — AI-guided security toolkit
+
+Usage: secforge <command> [options]
+
+Scanning:
+  scan <target>                Quick Tier-1 scan (passive/safe)
+  scan --full <target>         Full scan (Tier 1 + Tier 2 opt-in)
+
+Reporting:
+  export --mode <mode> [opts]  Generate AI-ready markdown export
+    Modes: quick-fix, fix-pack, full-plan, patch, explain
+    --finding SF-###           Select finding (quick-fix, explain)
+    --pack <cluster_id>        Select fix pack (fix-pack, patch)
+    --detail beginner|operator|analyst
+    --session <session_id>     Use specific scan session
+    --out <path>               Write to file instead of stdout
+
+Verification:
+  verify --finding SF-###      Show verification commands for a finding
+  verify --pack FP-xxx         Show verification for a fix pack
+    --run                      Execute safe commands (allowlisted)
+    --stage pre|post|both      Filter by verification stage
+
+History & State:
+  list                         Open findings grouped by fix pack
+  diff                         What changed since last scan
+  history --finding SF-###     Full history for one finding
+  list --regressions           Most frequently reopened findings
+  list --accepted              Accepted risk / ignored / false positive
+  list --failed-verifications  Failed verification runs
+
+Management:
+  status                       System check (Ubuntu, tools, disk, RAM)
+  update                       Update all installed tools
+  purge --before <date>        Delete old scan history
+    --delete-reports           Also remove report directories
+    --dry-run                  Preview what would be deleted
+  ignore SF-### --reason "..." Mark finding as ignored
+  accept SF-### --reason "..." Mark finding as accepted risk
+  false-positive SF-### --reason "..." Mark as false positive
+
+Other:
+  version                      Show SecForge version
+  help                         Show this help
+EOF
+}
+
+cmd="${1:-help}"
+shift 2>/dev/null || true
+
+case "${cmd}" in
+  scan)
+    if [[ "${1:-}" == "--full" ]]; then
+      shift
+      exec bash "${SCRIPT_DIR}/scan-all.sh" "$@"
+    else
+      exec bash "${SCRIPT_DIR}/scan-quick.sh" "$@"
+    fi
+    ;;
+
+  export)
+    # Parse export args and dispatch to Python
+    exec python3 -c "
+import sys, json, os
+sys.path.insert(0, '${SCRIPT_DIR}')
+from secforge.export_ai import export, resolve_session, load_findings
+from pathlib import Path
+
+args = sys.argv[1:]
+mode = ''
+finding_id = None
+pack_id = None
+detail = 'operator'
+session_spec = None
+out_path = None
+
+i = 0
+while i < len(args):
+    a = args[i]
+    if a == '--mode' and i+1 < len(args):
+        mode = args[i+1]; i += 2
+    elif a == '--finding' and i+1 < len(args):
+        finding_id = args[i+1]; i += 2
+    elif a == '--pack' and i+1 < len(args):
+        pack_id = args[i+1]; i += 2
+    elif a == '--detail' and i+1 < len(args):
+        detail = args[i+1]; i += 2
+    elif a == '--session' and i+1 < len(args):
+        session_spec = args[i+1]; i += 2
+    elif a == '--in' and i+1 < len(args):
+        session_spec = args[i+1]; i += 2
+    elif a == '--out' and i+1 < len(args):
+        out_path = args[i+1]; i += 2
+    else:
+        i += 1
+
+if not mode:
+    print('Error: --mode required (quick-fix|fix-pack|full-plan|patch|explain)', file=sys.stderr)
+    sys.exit(2)
+
+reports_dir = Path('${SECFORGE_ROOT}/reports')
+fj_path = resolve_session(reports_dir, session_spec)
+if not fj_path or not fj_path.exists():
+    print('Error: no findings.json found. Run a scan first or specify --session/--in.', file=sys.stderr)
+    sys.exit(2)
+
+data = load_findings(fj_path)
+output = export(mode, data, finding_id=finding_id, pack_id=pack_id, detail=detail)
+
+if out_path:
+    Path(out_path).write_text(output, encoding='utf-8')
+    print(f'Written to {out_path}', file=sys.stderr)
+else:
+    print(output)
+" "$@"
+    ;;
+
+  verify)
+    exec python3 -c "
+import sys, json
+sys.path.insert(0, '${SCRIPT_DIR}')
+from secforge.export_ai import resolve_session, load_findings
+from secforge.verify import run_verification, write_results, is_safe_command
+from pathlib import Path
+
+args = sys.argv[1:]
+finding_id = None
+pack_id = None
+execute = False
+allow_noisy = False
+stage = None
+
+i = 0
+while i < len(args):
+    a = args[i]
+    if a == '--finding' and i+1 < len(args):
+        finding_id = args[i+1]; i += 2
+    elif a == '--pack' and i+1 < len(args):
+        pack_id = args[i+1]; i += 2
+    elif a == '--run':
+        execute = True; i += 1
+    elif a == '--allow-noisy':
+        allow_noisy = True; i += 1
+    elif a == '--stage' and i+1 < len(args):
+        stage = args[i+1]; i += 2
+    else:
+        i += 1
+
+reports_dir = Path('${SECFORGE_ROOT}/reports')
+fj_path = resolve_session(reports_dir)
+if not fj_path or not fj_path.exists():
+    print('Error: no findings.json found.', file=sys.stderr)
+    sys.exit(2)
+
+data = load_findings(fj_path)
+
+# Collect verification checks
+checks = []
+if finding_id:
+    for f in data.get('findings', []):
+        if f.get('id') == finding_id:
+            checks.extend(f.get('verification', []))
+            break
+elif pack_id:
+    normalized = pack_id if pack_id.startswith('FP-') else f'FP-{pack_id}'
+    for p in data.get('fix_packs', []):
+        if p.get('fix_pack_id') == normalized:
+            checks.extend(p.get('verification', []))
+            break
+
+if not checks:
+    print('No verification checks found for the specified finding/pack.', file=sys.stderr)
+    sys.exit(1)
+
+results = run_verification(checks, stage_filter=stage, execute=execute, allow_noisy=allow_noisy)
+
+# Display results
+for r in results:
+    status = 'PASS' if r.passed else 'FAIL' if execute else 'SUGGEST'
+    print(f'  [{status}] {r.name}')
+    if r.command:
+        print(f'         {r.command}')
+    if r.explain:
+        print(f'         {r.explain}')
+    if execute and r.actual_output and not r.passed:
+        print(f'         Output: {r.actual_output[:200]}')
+    print()
+
+passed = sum(1 for r in results if r.passed)
+total = len(results)
+if execute:
+    print(f'Results: {passed}/{total} passed')
+
+# Write results to session if we have a session dir
+session_dir = fj_path.parent
+if session_dir.is_dir():
+    write_results(results, session_dir)
+" "$@"
+    ;;
+
+  list|diff|history|purge)
+    # Placeholder for Step 15 query commands — will use state.py
+    sf_die "Command '${cmd}' is implemented in the v2 state module. Coming soon."
+    ;;
+
+  status)
+    exec bash "${SCRIPT_DIR}/system-check.sh"
+    ;;
+
+  update)
+    exec bash "${SCRIPT_DIR}/update-all.sh"
+    ;;
+
+  ignore|accept|false-positive)
+    sf_die "Command '${cmd}' requires the state database. Coming soon."
+    ;;
+
+  version)
+    python3 -c "from secforge import __version__; print(f'SecForge v{__version__}')" 2>/dev/null || echo "SecForge v1"
+    ;;
+
+  help|--help|-h)
+    show_help
+    ;;
+
+  *)
+    echo "Unknown command: ${cmd}" >&2
+    echo "Run 'secforge help' for usage." >&2
+    exit 2
+    ;;
+esac

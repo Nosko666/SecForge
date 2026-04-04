@@ -11,6 +11,7 @@ config/.authorized_targets
 
 # Installer-generated tool links/wrappers in bin; keep SecForge wrappers tracked
 bin/*
+!bin/secforge
 !bin/secforge-*
 
 # Editor/OS noise
