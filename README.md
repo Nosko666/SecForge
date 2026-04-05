@@ -1,279 +1,257 @@
 # SecForge
 
-AI-native security toolkit for vibecoders. 51 tools, smart dedup, fix packs, priority scoring, state tracking, 5 AI export modes. One install, Claude/Codex runs everything.
+Free, open-source security toolkit built for vibecoders. You talk to Claude or Codex, it scans your site, finds problems, and walks you through fixing them. No security expertise needed.
 
-## Why SecForge?
+## What Does It Do?
 
-Most developers who build with AI aren’t security experts. SecForge bundles 51 security scanners into a single CLI that AI assistants know how to operate. You say “scan my site” and get back prioritized **fix packs** — grouped, scored, verified remediation plans, not raw vulnerability dumps.
+You say **"scan my site"** to your AI assistant. SecForge:
 
-**What makes v2 different:**
-- **Fix packs, not findings lists** — related issues grouped by root cause (e.g., “HTTP Header Hardening: 12 findings, easy fix”)
-- **Priority scoring** — 7-factor scoring (0-100) considers severity, exposure, confidence, ease of fix, multi-tool confirmation, blast radius, and age
-- **State tracking** — SQLite DB tracks findings across scans: new, existing, fixed, reopened, ignored
-- **Conservative fixed-gating** — findings only marked “fixed” when the detecting tool ran successfully AND the fingerprint is absent
-- **5 AI export modes** — quick-fix, fix-pack, full-plan, patch, explain — each with YAML front-matter for AI context
-- **Verification runner** — safe command allowlist, structured assertions, auto PASS/FAIL after fixes
-- **Smart dedup** — 3-level deduplication (same-tool, cross-tool, cross-scan) with stable SHA-256 fingerprints
+1. **Detects your stack** (Node+Nginx? WordPress? Python+Django?) and picks the right tools
+2. **Runs 51 security scanners** (network, web, SSL, secrets, dependencies, server hardening)
+3. **Groups findings into fix packs** — "Fix your HTTP headers (12 issues, easy)" instead of 200 raw warnings
+4. **Scores priorities** — critical stuff first, with plain English explanations
+5. **Tracks progress** — rescan after fixing and it shows what's fixed, what's new, what came back
+6. **Generates fixes** — actual commands, diffs, and config changes you can copy-paste
 
-## Install (Ubuntu 20.04+)
+## Install (30 seconds, Ubuntu 20.04+)
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/Nosko666/SecForge/main/install.sh | sudo bash
 ```
 
-What this does:
-- Clones SecForge into `/opt/secforge/`
-- Runs the menu installer at `/opt/secforge/scripts/install.sh`
-- Installs selected tools, creates the runtime folders, and sets up `/opt/secforge/bin` in your PATH
+This installs the base (~50MB): directory structure, gum (pretty dashboard), tmux, and base deps. **No security tools yet** — your AI picks the right ones for your stack.
 
-## Quick Start
-
-### With AI (recommended)
-
-Start your AI assistant in `/opt/secforge/` (Claude Code, Codex, or any terminal AI). Both read the same orchestration instructions:
-- `/opt/secforge/CLAUDE.md` / `AGENTS.md` (identical)
-
-Example prompts:
-- “Scan my site https://example.com”
-- “Harden this server”
-- “Payment security audit for https://example.com/checkout”
-
-### With the CLI
-
+Or manually:
 ```bash
-# Scan
-secforge scan example.com              # Quick Tier-1 scan
-secforge scan --full example.com       # Full scan (Tier 1 + Tier 2 opt-in)
-
-# Review results as fix packs
-secforge export --mode full-plan       # Prioritized remediation plan
-secforge export --mode fix-pack --pack http-header-hardening  # One pack
-secforge export --mode quick-fix --finding SF-003             # One finding
-secforge export --mode explain --finding SF-001               # Plain English
-secforge export --mode patch --pack tls-hardening             # Generate diffs
-
-# Verify fixes
-secforge verify --pack FP-http-header-hardening --run
-secforge verify --finding SF-003 --run
-
-# Track progress
-secforge list                          # Open findings grouped by fix pack
-secforge diff                          # What changed since last scan
-secforge history --finding SF-001      # Full history for one finding
-
-# Manage findings
-secforge ignore SF-007 --reason “False positive in test env”
-secforge accept SF-012 --reason “Accepted risk by team”
-secforge false-positive SF-003 --reason “Scanner false positive”
+git clone https://github.com/Nosko666/SecForge.git /opt/secforge
+cd /opt/secforge && sudo scripts/bootstrap.sh
 ```
 
-### No AI, no CLI? Raw scripts still work:
+## Getting Started
+
+### The AI Way (recommended)
+
+Open Claude Code, Codex, or any AI terminal in `/opt/secforge/` and say:
+
+- **"Scan my site example.com"** — full scan with live dashboard
+- **"Harden this server"** — audit + fix suggestions
+- **"Check my app for secrets"** — scans your code for leaked keys/tokens
+- **"Payment security audit"** — checks Stripe/payment pages
+
+The AI reads `CLAUDE.md` (the orchestration instructions) and handles everything: picks tools for your stack, shows progress, explains findings, generates fixes, verifies them.
+
+### The CLI Way
+
+```bash
+# Setup
+secforge init                            # Interactive wizard (domain, environment, payments)
+secforge install --list                  # See all available tools
+secforge install nuclei nmap testssl     # Install specific tools
+
+# Scan
+secforge scan example.com                                # Quick scan
+secforge scan example.com --stack node-nginx --dashboard # With stack profile + live dashboard
+secforge scan example.com --skip nmap,testssl            # Skip specific tools
+secforge scan --full example.com                         # Full scan (Tier 1 + Tier 2)
+
+# Review
+secforge list                            # Findings grouped by fix pack
+secforge diff                            # What changed since last scan
+secforge export --mode full-plan         # AI-ready remediation plan
+secforge export --mode explain --finding SF-001  # Plain English explanation
+
+# Fix + Verify
+secforge verify --pack FP-http-header-hardening --run    # Auto-check if fix worked
+secforge history --finding SF-001                         # Track one finding over time
+```
+
+### No AI, No CLI? Raw scripts still work:
 
 ```bash
 /opt/secforge/scripts/scan-quick.sh https://example.com
 /opt/secforge/scripts/scan-all.sh https://example.com
 ```
 
-## v2 Architecture
+## Stack Profiles
+
+SecForge knows about your tech stack and only runs relevant tools:
+
+| Profile | For | Tools included |
+|---------|-----|----------------|
+| `node-nginx` | Node.js behind Nginx | nuclei (nodejs tags), nmap, testssl, gitleaks, osv-scanner, ssh-audit |
+| `python-nginx` | Django/Flask behind Nginx | nuclei (python tags), pip-audit, trivy, lynis |
+| `wordpress` | WordPress sites | nuclei (wordpress tags), wapiti, wafw00f, xmlrpc checks |
+| `php-nginx` | PHP behind Nginx | nuclei (php tags), ffuf, nikto |
+| `java-spring` | Spring Boot apps | nuclei (java tags), trivy, osv-scanner |
+| `ruby-rails` | Ruby on Rails | nuclei (ruby tags), gitleaks, osv-scanner |
+| `static-nginx` | Static sites on Nginx | testssl, ssh-audit, lynis (minimal toolset) |
+| `go-bare` | Go backends | nuclei, nmap, gitleaks, trivy |
+| `node-bare` | Node.js standalone | Same as node-nginx minus nginx-specific checks |
+
+Auto-detection: SecForge reads HTTP headers + your code files to guess the stack. If confident, it picks the profile automatically. If unsure, it tells you and runs the full scan.
+
+Use `--stack <profile>` to override: `secforge scan example.com --stack wordpress`
+
+## Live Dashboard
+
+When you add `--dashboard`, SecForge opens a side-by-side tmux pane showing:
+
+- Which tool is running right now
+- Progress bar (3/12 tools done)
+- Time estimates ("~8 min total, 5 min remaining")
+- Results as they come in
+- Post-scan summary with fix pack hints
+
+No dashboard? Works fine without it — just logs to the terminal.
+
+## How Scanning Works
 
 ```
-secforge scan example.com
-    |
-    v
-  51 tools run (wafw00f, nuclei, nmap, testssl, wapiti, gitleaks, ...)
-    |
-    v
-  Parse → Issue Key → Fingerprint → Dedup → Cluster → Score → Fix Packs
-    |
-    v
-  findings.json: findings[], clusters[], fix_packs[], summary
-    |
-    v
-  State DB: new → existing → fixed → reopened (tracked across scans)
-    |
-    v
-  secforge export --mode fix-pack → AI-ready markdown with front-matter
-    |
-    v
-  secforge verify --run → automated PASS/FAIL checks
+You: "scan my site"
+        |
+        v
+  Stack detection (auto or --stack)
+        |
+        v
+  Tool selection (profile + installedness + tier gating)
+        |
+        v
+  51 tools run (each gated by profile, skipped if missing)
+        |
+        v
+  Parse → Fingerprint → Dedup → Cluster → Score → Fix Packs
+        |
+        v
+  findings.json with findings[], clusters[], fix_packs[], summary
+        |
+        v
+  State DB tracks everything across scans (new/fixed/reopened)
+        |
+        v
+  AI presents fix packs, generates fixes, verifies them
 ```
 
-### Key components
+## What's a Fix Pack?
 
-| Component | What it does |
-|-----------|-------------|
-| **29 parsers** | Parse output from 51 tools into normalized v2 findings |
-| **Issue key resolver** | Maps tool-specific IDs to 85 catalog entries + stable fallback |
-| **Fingerprint engine** | SHA-256[:32] with 7 canonical string templates per asset type |
-| **3-level dedup** | Same-tool collapse, cross-tool merge with sources[], cross-scan state |
-| **18 clusters** | Group related findings by root cause (headers, TLS, injection, secrets, ...) |
-| **Priority scorer** | 7 weighted factors: severity, exposure, confidence, ease, multi-tool, blast radius, age |
-| **Fix packs** | 1:1 with clusters — title, direction, verification, rollback, safety gates |
-| **State DB** | SQLite tracking: 7 statuses, conservative fixed-gating, manual intent preserved |
-| **5 export modes** | quick-fix, fix-pack, full-plan, patch, explain — each with YAML front-matter |
-| **Verification runner** | Safe command allowlist, shlex.split (no shell), sudo gating, structured assertions |
-| **--inspect** | Probes local config files (/etc/nginx, /etc/ssh) for high-confidence fix locations |
+Instead of showing you 200 raw vulnerabilities, SecForge groups related issues:
 
-## Safety & Ethics (non-negotiable)
+```
+You have 47 findings in 8 fix packs:
 
-- Authorized testing only: scan systems you own or have written permission to test.
-- Tiered scanning:
-  - Tier 1 = passive/low-risk (default)
-  - Tier 2 = active/aggressive (requires explicit opt-in)
-- Hardening lockout prevention:
-  - Phased changes with verification gates
-  - Auto-revert for risky SSH/UFW changes
-  - Optional watchdog for multi-file rollback
+#1 Injection Prevention (critical, 3 findings)
+#2 HTTP Header Hardening (high, 12 findings, easy fix)
+#3 Secrets Exposure (high, 4 findings)
+#4 TLS/SSL Hardening (medium, 6 findings)
+...
+```
+
+Each fix pack has:
+- What's wrong (plain English)
+- How to fix it (commands + config changes)
+- How to verify it worked (automated checks)
+- What might break (rollback plan)
+
+## Tier 1 vs Tier 2
+
+| | Tier 1 (default) | Tier 2 (opt-in) |
+|---|---|---|
+| **What it does** | Observes and reports | Sends attack payloads to test |
+| **Safe for production?** | Yes | Be careful — can cause slowdowns |
+| **Examples** | nmap, nuclei, testssl, lynis | sqlmap, ZAP active scan, hydra |
+| **When to use** | Always | Staging, off-peak, with explicit approval |
+
+Tier 2 never runs unless you explicitly say YES.
+
+## Tool Installation
+
+SecForge installs tools individually, not in big bundles:
+
+```bash
+secforge install --list                  # See what's available
+secforge install nuclei gitleaks nmap    # Install specific tools
+secforge install --all                   # Install everything (~7GB)
+```
+
+Each tool knows how to install itself (apt, GitHub binary, git clone, pip venv). Dependencies are handled automatically — `nuclei` installs `nuclei-templates` too.
+
+Or let the AI pick: it reads your stack profile and suggests exactly what you need.
+
+## 51 Security Tools
+
+Organized by what they check:
+
+**Web scanning:** Nuclei, ZAP, ffuf, Nikto, WhatWeb, wafw00f, Wapiti, CORScanner, SQLMap, XSStrike, Dalfox, Commix
+**API security:** Kiterunner, jwt_tool, VulnAPI, Interactsh
+**Network:** Nmap, Masscan, Netcat
+**SSL/TLS:** testssl.sh, sslscan, Observatory
+**Secrets:** TruffleHog, Gitleaks, APKLeaks
+**Server hardening:** Lynis, ssh-audit, systemd-analyze, debsums, Trivy, ClamAV, rkhunter, fail2ban, AIDE, auditd
+**Dependencies:** OSV-Scanner, npm audit, pip-audit
+**Email/DNS:** check-email-dns, Subfinder, httpx, dnsrecon
+**Password testing:** Hydra, John the Ripper, Hashcat, NetExec (Tier 2 only)
+**Mobile:** MobSF, APKDeepLens, APKHunt
+**Compliance:** OpenSCAP, stripe-check
+**Cloud/IaC:** Trivy config, Checkov, Prowler
+
+Plus built-in checks (no extra tools needed): .git/.env exposure, cookie flags, clickjacking protection, dangerous HTTP methods, SSRF probes.
+
+## Safety
+
+- **Authorization required** — SecForge asks you to confirm you own/are authorized to test the target
+- **Lockout prevention** — SSH/firewall changes use auto-revert + phased verification gates
+- **Conservative tracking** — findings only marked "fixed" when the detecting tool actually ran and confirmed
+- **No system Python pollution** — tools install in venvs and the SecForge bin/ directory
 
 ## Directory Layout
 
-SecForge is installed under a single root:
-
 ```
 /opt/secforge/
-  bin/          # wrappers + tool entrypoints
-  tools/        # git-cloned tools
-  wordlists/    # curated SecLists subset
-  venv/         # Python tools live here (no system Python pollution)
-  config/       # secforge.conf + templates
-  reports/      # scan output (timestamped sessions + latest symlink)
-  backups/      # config backups before any fixes
-  scripts/      # installers + scan + merge + update scripts
+  bin/          SecForge CLI + tool wrappers
+  catalog/      tools.json + profiles.json (tool metadata + stack profiles)
+  config/       secforge.conf + authorized targets
+  scripts/      Scan scripts, installers, dashboard, merge pipeline
+  tools/        Git-cloned security tools
+  wordlists/    Curated SecLists subset
+  venv/         Python tool virtual environments
+  reports/      Scan output (timestamped sessions + latest symlink)
+  backups/      Config backups before fixes
+  state/        SQLite DB for cross-scan tracking
+  logs/         Update and install logs
 ```
-
-## Install Options (approx.)
-
-The menu installer offers:
-
-| Option | What it’s for | Disk (approx.) |
-|---|---|---:|
-| Install Everything | full coverage (web + server + secrets + deps + optional cloud) | ~7GB+ |
-| Essential Only | fast baseline + high-value checks | ~2GB |
-| Custom | select categories | varies |
-
-Notes:
-- Some tools are optional (example: MobSF is Docker-only).
-- Some tooling is downloaded as prebuilt binaries (no Go toolchain required).
-
-## Scan Profiles
-
-Common workflows:
-- Quick Scan (Tier 1): baseline web + TLS + basic host checks
-- Full Web Scan: Tier 1 baseline, then Tier 2 opt-in
-- Safe System Audit: read-only system checks only
-- Full Server Hardening: audit first, then propose fixes with lockout prevention
-- Payment Security Audit: Stripe/payment checks + TLS + focused web checks
-- Dependency Check: OSV + npm/pip audits
-
-## Tooling (high-level)
-
-SecForge installs and orchestrates tools across categories like:
-- Web scanning: Nuclei, ZAP, ffuf, Nikto, WhatWeb, Wapiti, and more
-- API: Kiterunner, jwt_tool, Interactsh
-- Network: Nmap, Masscan
-- TLS/Headers: testssl.sh, sslscan, Observatory
-- Secrets: TruffleHog, Gitleaks
-- Server audits: Lynis, ssh-audit, systemd-analyze security, Trivy rootfs, debsums
-- Email/DNS: SPF/DMARC/DKIM/DNSSEC/MTA-STS/TLS-RPT checks + Subfinder/httpx
-- Payment: `stripe-check` (custom, outputs JSON checks)
-
-For the full command contract and safety protocols, see:
-- `CLAUDE.md` / `AGENTS.md`
-
-## Tool List (security tools)
-
-This is the core security tooling SecForge installs/orchestrates (support packages like `curl`, `jq`, `tmux`, `at`, etc. are omitted here).
-
-| Tool | Category | Tier | Purpose (plain English) |
-|---|---|---:|---|
-| wafw00f | Web | 1 | Detects if a WAF is in front of the site (helps avoid false negatives) |
-| CORScanner | Web | 1 | Checks for CORS misconfigurations that can leak data cross-site |
-| OWASP ZAP | Web | 2 | Active web scanner (sends many payloads to discover vulns) |
-| Nuclei | Web | 1 | Template-based vulnerability scanner for known issues/misconfigs |
-| SQLMap | Web | 2 | SQL injection testing (active payloads) |
-| ffuf | Web | 1 | Directory/endpoint discovery by fuzzing common paths |
-| Nikto | Web | 1 | Web server misconfiguration/vulnerability checks |
-| XSStrike | Web | 2 | XSS testing (active payloads) |
-| Dalfox | Web | 2 | XSS testing (active payloads) |
-| Commix | Web | 2 | Command injection testing (active payloads) |
-| WhatWeb | Web | 1 | Fingerprints site technologies (frameworks, server, CMS, etc.) |
-| Wapiti | Web | 2 | Web vulnerability scanner (active testing) |
-| VulnAPI | API | 1 | API security scanning (fast checks for common issues) |
-| Kiterunner (kr) | API | 1 | API route discovery and probing |
-| jwt_tool | API | 1 | Analyzes JWTs for common weaknesses/misuse |
-| Interactsh (client) | API | 1 | Captures out-of-band callbacks for blind vulnerabilities (SSRF/XSS/etc.) |
-| Nmap | Network | 1 | Port + service discovery (safe mode without root) |
-| Masscan | Network | 1 | High-speed port scan (sudo-only; optional) |
-| Netcat (nc) | Network | 1 | Quick TCP connectivity checks |
-| testssl.sh | SSL/TLS | 1 | TLS configuration and certificate audit |
-| sslscan | SSL/TLS | 1 | TLS scan (cipher/protocol enumeration) |
-| Mozilla Observatory CLI | SSL/TLS | 1 | Security header analysis and grading |
-| Hydra | Passwords | 2 | Brute-force testing (active; can trigger bans/lockouts) |
-| John the Ripper | Passwords | 2 | Password hash cracking (offline) |
-| Hashcat | Passwords | 2 | Password hash cracking (offline; GPU-accelerated) |
-| NetExec (nxc) | Passwords | 2 | Auth testing/enumeration against services (active) |
-| TruffleHog | Secrets | 1 | Finds secrets in code/repos/filesystems |
-| Gitleaks | Secrets | 1 | Finds secrets in repos with rulesets |
-| APKLeaks | Secrets | 1 | Finds hardcoded secrets in APKs (requires jadx) |
-| MobSF (Docker) | Mobile | 1 | Mobile app security analysis (Docker-only, optional) |
-| APKDeepLens | Mobile | 1 | Static APK analysis/reporting |
-| APKHunt | Mobile | 1 | APK analysis for common issues |
-| jadx | Mobile | 1 | Java decompiler (installed automatically, required by APKLeaks) |
-| Lynis | Hardening/Compliance | 1 | System audit with hardening guidance (read-only) |
-| OpenSCAP (oscap) | Compliance | 1 | Compliance/benchmark evaluation (read-only) |
-| stripe-check | Payment | 1 | Stripe/payment security heuristics (CSP, mixed content, raw card fields, etc.) |
-| ssh-audit | Hardening | 1 | SSH server configuration audit |
-| systemd-analyze security | Hardening | 1 | Audits systemd unit sandboxing/hardening settings |
-| debsums | Hardening | 1 | Detects modified files from installed packages |
-| Trivy (rootfs/config/image) | Hardening/Containers/IaC | 1 | Finds vulnerabilities in OS/filesystems, images, and configs |
-| ClamAV | Hardening | 1 | Malware scanning |
-| rkhunter | Hardening | 1 | Rootkit scanning |
-| fail2ban | Hardening | 1 | Brute-force protection (service; configured carefully to avoid lockout) |
-| AIDE | Hardening | 1 | File integrity monitoring |
-| auditd/aureport | Hardening | 1 | Security auditing/log reporting |
-| OSV-Scanner | Dependencies | 1 | Dependency vulnerability scanning (multi-ecosystem) |
-| npm audit | Dependencies | 1 | Node.js dependency vulnerability checks |
-| pip-audit | Dependencies | 1 | Python dependency vulnerability checks |
-| check-email-dns | Email/DNS | 1 | SPF/DMARC/DKIM/DNSSEC/MTA-STS/TLS-RPT checks |
-| Subfinder | Email/DNS | 1 | Subdomain discovery (finds forgotten hosts) |
-| httpx | Email/DNS | 1 | Probes discovered hosts for live HTTP services |
-| dnsrecon | Email/DNS | 1 | DNS enumeration/audit (optional) |
-| check-mysql | Database | 1 | Local MySQL misconfiguration checks (no secret dumping) |
-| Checkov | IaC/Cloud | 1 | Infrastructure-as-Code scanning (optional) |
-| Prowler | Cloud | 1 | Cloud account posture checks (optional) |
 
 ## Updating
 
 ```bash
+secforge update                # Update all installed tools
+# or
 sudo /opt/secforge/scripts/update-all.sh
 ```
 
-Default behavior is safe-by-default:
-- `apt-get install --only-upgrade` on SecForge-related packages that are already installed
-- venv package upgrades for SecForge-installed Python tooling
-- `git pull --ff-only` for git-cloned tools
-- re-download latest GitHub release binaries where applicable
+Safe by default: only upgrades what SecForge installed.
 
 ## FAQ
 
-### Is this legal?
-Yes—when used for authorized security testing. Only scan systems you own or have written permission to test.
+**Is this legal?**
+Yes — for authorized security testing. Only scan systems you own or have permission to test.
 
-### Do I need a paid AI plan?
-Depends on which assistant you use. SecForge works with any terminal AI that can read project files and run shell commands, but large scan outputs may benefit from larger context windows.
+**Do I need a paid AI plan?**
+SecForge works with any AI that can read files and run commands. Larger context windows help with big scan outputs.
 
-### Can SecForge lock me out of my server?
-Hardening can lock you out if done incorrectly. SecForge’s orchestration instructions include a lockout-prevention protocol (auto-revert + phased verification gates). Always keep console/out-of-band access available before making SSH/UFW changes.
+**Can it lock me out of my server?**
+Hardening can be risky. SecForge's lockout prevention protocol uses auto-revert, phased verification gates, and always asks before touching SSH/firewall configs. Keep console access available.
+
+**What if I don't have Claude/Codex?**
+Everything works from the CLI. The AI just makes it easier — it picks tools, explains findings, and generates fixes.
 
 ## Contributing
 
 PRs welcome:
-- new scanners and parsers
-- improved report merging + dedupe
-- safer hardening playbooks
-- better defaults for vibecoders
+- New scanners and parsers
+- Better stack profiles
+- Safer hardening playbooks
+- Improved defaults for vibecoders
 
-Please keep safety rules intact: authorization gating, explicit confirmations, backups, and verification rescans.
+Keep safety rules intact: authorization gating, explicit confirmations, backups, verification rescans.
 
 ## License
 
