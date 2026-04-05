@@ -15,7 +15,18 @@ SECFORGE_CONFIG_FILE="${SECFORGE_CONFIG_FILE:-${SECFORGE_ROOT}/config/secforge.c
 sf_usage() {
   cat >&2 <<EOF
 Usage:
-  ${0##*/} --target <domain|url> [--profile <name>] [--require-tools <csv>] [--session-id <id>]
+  ${0##*/} --target <domain|url> [OPTIONS]
+
+Options:
+  --target <url>         Target domain or URL (required)
+  --profile <name>       Legacy profile name
+  --stack <name>         Stack profile (e.g. node-nginx, php-nginx)
+  --skip <csv>           Comma-separated tool IDs to skip
+  --tier <n>             Override TIER_MAX (1=passive, 2=active)
+  --scan-mode <mode>     Scan mode: quick (default) or full
+  --code-path <path>     Local code path for file-based stack detection
+  --require-tools <csv>  Require these tools to be installed
+  --session-id <id>      Override session ID
 
 Outputs shell exports on stdout (safe to source), logs on stderr.
 EOF
@@ -152,6 +163,7 @@ sf_check_tools() {
 
 main() {
   local target="" profile="" require_tools="" session_id=""
+  local stack="" skip_tools="" tier_override="" scan_mode="quick" code_path=""
 
   while [[ "${#}" -gt 0 ]]; do
     case "$1" in
@@ -159,6 +171,11 @@ main() {
       --profile) profile="${2:-}"; shift 2 ;;
       --require-tools) require_tools="${2:-}"; shift 2 ;;
       --session-id) session_id="${2:-}"; shift 2 ;;
+      --stack) stack="${2:-}"; shift 2 ;;
+      --skip) skip_tools="${2:-}"; shift 2 ;;
+      --tier) tier_override="${2:-}"; shift 2 ;;
+      --scan-mode) scan_mode="${2:-}"; shift 2 ;;
+      --code-path) code_path="${2:-}"; shift 2 ;;
       -h|--help) sf_usage; exit 0 ;;
       *) sf_warn "Unknown argument: $1"; sf_usage; exit 2 ;;
     esac
@@ -342,6 +359,385 @@ PY
     SECFORGE_MISSING_TOOLS; do
     declare -p "${_sf_var}" 2>/dev/null || true
   done
+
+  # ── Stack detection, profile expansion, tool planning, estimates ──
+  # This Python heredoc reads catalogs, resolves profiles, checks tool
+  # installedness, computes time estimates, and outputs additional
+  # declare -x lines to stdout (same mechanism as the loop above).
+  SECFORGE_ROOT="${SECFORGE_ROOT}" \
+  SECFORGE_STACK="${stack}" \
+  SECFORGE_SKIP="${skip_tools}" \
+  SECFORGE_TIER_OVERRIDE="${tier_override}" \
+  SECFORGE_SCAN_MODE="${scan_mode}" \
+  SECFORGE_TARGET_URL="${base_url}" \
+  SECFORGE_TARGET_HOST="${host}" \
+  SECFORGE_CODE_PATH="${code_path}" \
+  SECFORGE_CONFIG_FILE="${SECFORGE_CONFIG_FILE}" \
+  python3 - <<'PYPLAN'
+import glob
+import json
+import os
+import re
+import shutil
+import statistics
+import subprocess
+import sys
+
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+def safe_shell_value(val):
+    """Escape a value for safe inclusion inside declare -x VAR="val"."""
+    # Replace backslash first, then double-quote, then dollar sign, backtick.
+    val = val.replace("\\", "\\\\")
+    val = val.replace('"', '\\"')
+    val = val.replace("$", "\\$")
+    val = val.replace("`", "\\`")
+    return val
+
+
+def emit(name, value):
+    """Print a declare -x statement safe for sourcing."""
+    print(f'declare -x {name}="{safe_shell_value(str(value))}"')
+
+
+def warn(msg):
+    print(f"[secforge] WARN: {msg}", file=sys.stderr)
+
+
+def cmd_exists(cmd, secforge_root):
+    """Check if a command is available via PATH or under $SECFORGE_ROOT/bin/."""
+    bin_path = os.path.join(secforge_root, "bin", cmd)
+    if os.path.isfile(bin_path) and os.access(bin_path, os.X_OK):
+        return True
+    return shutil.which(cmd) is not None
+
+
+def path_exists(rel_path, secforge_root):
+    """Check if a relative path exists under $SECFORGE_ROOT."""
+    full = os.path.join(secforge_root, rel_path)
+    return os.path.exists(full)
+
+
+# ── Read environment ─────────────────────────────────────────────────
+
+SECFORGE_ROOT = os.environ.get("SECFORGE_ROOT", "")
+STACK = os.environ.get("SECFORGE_STACK", "").strip()
+SKIP_CSV = os.environ.get("SECFORGE_SKIP", "").strip()
+TIER_OVERRIDE = os.environ.get("SECFORGE_TIER_OVERRIDE", "").strip()
+SCAN_MODE = os.environ.get("SECFORGE_SCAN_MODE", "quick").strip()
+TARGET_URL = os.environ.get("SECFORGE_TARGET_URL", "").strip()
+TARGET_HOST = os.environ.get("SECFORGE_TARGET_HOST", "").strip()
+CODE_PATH = os.environ.get("SECFORGE_CODE_PATH", "").strip()
+CONFIG_FILE = os.environ.get("SECFORGE_CONFIG_FILE", "").strip()
+
+if not SECFORGE_ROOT:
+    warn("SECFORGE_ROOT not set; skipping planner.")
+    sys.exit(0)
+
+skip_set = set()
+if SKIP_CSV:
+    skip_set = {s.strip() for s in SKIP_CSV.split(",") if s.strip()}
+
+
+# ── Load catalogs ────────────────────────────────────────────────────
+
+catalog_dir = os.path.join(SECFORGE_ROOT, "catalog")
+tools_path = os.path.join(catalog_dir, "tools.json")
+profiles_path = os.path.join(catalog_dir, "profiles.json")
+
+try:
+    with open(tools_path, "r", encoding="utf-8") as f:
+        tools_catalog = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError) as exc:
+    warn(f"Cannot load {tools_path}: {exc}")
+    tools_catalog = {}
+
+try:
+    with open(profiles_path, "r", encoding="utf-8") as f:
+        profiles_catalog = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError) as exc:
+    warn(f"Cannot load {profiles_path}: {exc}")
+    profiles_catalog = {}
+
+# Strip _meta keys
+tools_catalog.pop("_meta", None)
+profiles_catalog.pop("_meta", None)
+
+
+# ── TIER_MAX from config ─────────────────────────────────────────────
+
+def read_config_value(cfg_path, key):
+    """Read a KEY=VALUE from config file (simple parser)."""
+    if not cfg_path or not os.path.isfile(cfg_path):
+        return ""
+    try:
+        with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k == key:
+                    return v
+    except OSError:
+        pass
+    return ""
+
+
+tier_max_str = ""
+if TIER_OVERRIDE:
+    tier_max_str = TIER_OVERRIDE
+else:
+    tier_max_str = read_config_value(CONFIG_FILE, "TIER_MAX")
+    if not tier_max_str:
+        tier_max_str = read_config_value(CONFIG_FILE, "DEFAULT_TIER")
+
+try:
+    TIER_MAX = int(tier_max_str)
+except (ValueError, TypeError):
+    TIER_MAX = 1  # safe default
+
+
+# ── Stack detection ──────────────────────────────────────────────────
+
+detected_profile_name = ""
+detect_confidence = "none"
+
+if STACK:
+    # Explicit --stack flag: use directly
+    if STACK in profiles_catalog:
+        detected_profile_name = STACK
+        detect_confidence = "high"
+    else:
+        warn(f"Unknown stack profile '{STACK}'; falling back to auto-detect.")
+
+if not detected_profile_name:
+    # Auto-detect from HTTP headers + code path files + cookies
+    # Fetch response headers once (best-effort)
+    resp_headers = {}
+    resp_cookies = []
+    if TARGET_URL:
+        try:
+            result = subprocess.run(
+                ["curl", "-fsS", "-I", "--max-time", "10", TARGET_URL],
+                capture_output=True, text=True, timeout=15
+            )
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if ":" in line:
+                    hname, _, hval = line.partition(":")
+                    hname_lower = hname.strip().lower()
+                    hval_stripped = hval.strip()
+                    resp_headers[hname_lower] = hval_stripped
+                    # Collect cookie names from Set-Cookie headers
+                    if hname_lower == "set-cookie":
+                        cookie_name = hval_stripped.split("=")[0].strip()
+                        if cookie_name:
+                            resp_cookies.append(cookie_name.lower())
+        except Exception:
+            pass  # header detection is best-effort
+
+    # Score each profile
+    profile_scores = {}  # profile_name -> signal_count
+    for pname, pdata in profiles_catalog.items():
+        signals = 0
+
+        # Check detect_headers (case-insensitive contains)
+        detect_hdrs = pdata.get("detect_headers", {})
+        for hdr_name, hdr_pattern in detect_hdrs.items():
+            hdr_name_lower = hdr_name.lower()
+            if hdr_name_lower in resp_headers:
+                if not hdr_pattern:
+                    # Empty pattern means "header exists" is enough
+                    signals += 1
+                elif hdr_pattern.lower() in resp_headers[hdr_name_lower].lower():
+                    signals += 1
+
+        # Check detect_cookies
+        detect_cookies = pdata.get("detect_cookies", [])
+        for cookie_pattern in detect_cookies:
+            cookie_lower = cookie_pattern.lower()
+            for rc in resp_cookies:
+                if cookie_lower in rc:
+                    signals += 1
+                    break
+
+        # Check detect_files (if code path is available)
+        detect_files = pdata.get("detect_files", [])
+        if CODE_PATH and os.path.isdir(CODE_PATH):
+            for df in detect_files:
+                check = os.path.join(CODE_PATH, df)
+                if os.path.exists(check):
+                    signals += 1
+
+        if signals > 0:
+            profile_scores[pname] = signals
+
+    # Confidence gating
+    if profile_scores:
+        max_score = max(profile_scores.values())
+        winners = [p for p, s in profile_scores.items() if s == max_score]
+        min_signals = profiles_catalog.get(winners[0], {}).get("min_detect_signals", 2) if len(winners) == 1 else 2
+
+        if len(winners) == 1 and max_score >= min_signals:
+            detected_profile_name = winners[0]
+            detect_confidence = "high"
+        elif len(winners) == 1 and max_score >= 1:
+            # Some signals but below min_detect_signals
+            detect_confidence = "low"
+        else:
+            # Tie or no clear winner
+            detect_confidence = "low" if max_score >= 1 else "none"
+
+
+# ── Profile expansion → tools_planned ────────────────────────────────
+
+profile_data = profiles_catalog.get(detected_profile_name, {}) if detected_profile_name else {}
+tools_planned = []
+tools_skipped = []
+tools_missing = []
+
+if detected_profile_name and detect_confidence == "high":
+    # Start with profile's tools_include (strict allowlist)
+    candidate_ids = list(profile_data.get("tools_include", []))
+
+    # Remove tools_exclude
+    exclude_set = set(profile_data.get("tools_exclude", []))
+    candidate_ids = [t for t in candidate_ids if t not in exclude_set]
+
+    # Remove tools above TIER_MAX
+    candidate_ids = [t for t in candidate_ids if tools_catalog.get(t, {}).get("tier", 99) <= TIER_MAX]
+
+    # Remove --skip tools (warn on unknown IDs)
+    for skip_id in skip_set:
+        if skip_id not in tools_catalog:
+            warn(f"--skip: unknown tool ID '{skip_id}'")
+
+    skipped_by_flag = set()
+    remaining = []
+    for t in candidate_ids:
+        if t in skip_set:
+            skipped_by_flag.add(t)
+        else:
+            remaining.append(t)
+    candidate_ids = remaining
+
+    # Determine tools removed by tier or exclude
+    all_include = set(profile_data.get("tools_include", []))
+    tier_or_exclude_removed = all_include - set(candidate_ids) - exclude_set - skipped_by_flag
+    # Tools skipped = tier-gated + exclude + skip-flag
+    tools_skipped_set = exclude_set | skipped_by_flag
+    # Add tier-gated tools to skipped
+    for t in list(all_include):
+        if t not in candidate_ids and t not in exclude_set and t not in skipped_by_flag:
+            tools_skipped_set.add(t)
+
+    # Installedness check
+    for tool_id in candidate_ids:
+        tdata = tools_catalog.get(tool_id, {})
+        installed = True
+
+        # check.command
+        check = tdata.get("check", {})
+        check_cmd = check.get("command", "")
+        check_path = check.get("path", "")
+
+        if check_cmd:
+            if not cmd_exists(check_cmd, SECFORGE_ROOT):
+                installed = False
+        elif check_path:
+            if not path_exists(check_path, SECFORGE_ROOT):
+                installed = False
+
+        # depends_on: each dependency must pass its own check
+        if installed:
+            for dep_id in tdata.get("depends_on", []):
+                dep_data = tools_catalog.get(dep_id, {})
+                dep_check = dep_data.get("check", {})
+                dep_cmd = dep_check.get("command", "")
+                dep_path = dep_check.get("path", "")
+                if dep_cmd and not cmd_exists(dep_cmd, SECFORGE_ROOT):
+                    installed = False
+                    break
+                if dep_path and not path_exists(dep_path, SECFORGE_ROOT):
+                    installed = False
+                    break
+
+        # requires_commands: all must be available
+        if installed:
+            for req_cmd in tdata.get("requires_commands", []):
+                if not cmd_exists(req_cmd, SECFORGE_ROOT):
+                    installed = False
+                    break
+
+        if installed:
+            tools_planned.append(tool_id)
+        else:
+            tools_missing.append(tool_id)
+
+    # Build final skipped list (only tool IDs that are in the catalog)
+    tools_skipped = sorted(t for t in tools_skipped_set if t in tools_catalog)
+
+
+# ── Time estimates ───────────────────────────────────────────────────
+
+# Glob previous manifests for historical durations
+historical = {}  # tool_id -> list of durations
+if TARGET_HOST:
+    manifest_pattern = os.path.join(
+        SECFORGE_ROOT, "reports", f"20*_{TARGET_HOST}*", "scan_manifest.json"
+    )
+    manifest_files = sorted(glob.glob(manifest_pattern))[-5:]  # last 5
+    for mf in manifest_files:
+        try:
+            with open(mf, "r", encoding="utf-8") as f:
+                mdata = json.load(f)
+            durations = mdata.get("tool_durations", {})
+            for tid, dur in durations.items():
+                if isinstance(dur, (int, float)) and dur > 0:
+                    historical.setdefault(tid, []).append(dur)
+        except Exception:
+            pass
+
+total_est = 0
+for tool_id in tools_planned:
+    hist = historical.get(tool_id, [])
+    if hist:
+        est = int(statistics.median(hist[-5:]))
+    else:
+        est = tools_catalog.get(tool_id, {}).get("est_seconds", 0)
+    total_est += est
+
+
+# ── Nuclei tags ──────────────────────────────────────────────────────
+
+nuclei_tags = ",".join(profile_data.get("nuclei_tags_boost", []))
+nuclei_exclude_tags = ",".join(profile_data.get("nuclei_tags_skip", []))
+
+# ── Common endpoints ─────────────────────────────────────────────────
+
+common_endpoints = ",".join(profile_data.get("common_endpoints", []))
+
+
+# ── Output declare -x lines ─────────────────────────────────────────
+
+emit("SECFORGE_STACK_PROFILE", detected_profile_name)
+emit("SECFORGE_DETECTED_STACK", detected_profile_name)
+emit("SECFORGE_DETECT_CONFIDENCE", detect_confidence)
+emit("SECFORGE_TOOLS_PLANNED", ",".join(tools_planned))
+emit("SECFORGE_TOOLS_SKIPPED", ",".join(tools_skipped))
+emit("SECFORGE_TOOLS_MISSING", ",".join(tools_missing))
+emit("SECFORGE_NUCLEI_TAGS", nuclei_tags)
+emit("SECFORGE_NUCLEI_EXCLUDE_TAGS", nuclei_exclude_tags)
+emit("SECFORGE_COMMON_ENDPOINTS", common_endpoints)
+emit("SECFORGE_TIER_MAX", str(TIER_MAX))
+emit("SECFORGE_SCAN_MODE", SCAN_MODE)
+emit("SECFORGE_EST_SECONDS", str(total_est))
+emit("SECFORGE_EST_TOOLS_TOTAL", str(len(tools_planned)))
+PYPLAN
 }
 
 main "$@"
