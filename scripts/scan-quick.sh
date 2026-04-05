@@ -47,6 +47,7 @@ sf_run() {
 # Manifest tracking arrays
 _SF_TOOLS_RUN=()
 _SF_TOOLS_FAILED=()
+_SF_TOOL_DURATIONS=()
 
 sf_track_run() {
   # Usage: sf_track_run <tool_name> <check_file> <sf_run_args...>
@@ -57,7 +58,11 @@ sf_track_run() {
   shift 2
   local _stdout_path="$2"
   _SF_TOOLS_RUN+=("${tool_name}")
+  local _tool_start_ts="$(date +%s)"
   sf_run "$@"
+  local _tool_end_ts="$(date +%s)"
+  local _tool_dur=$(( _tool_end_ts - _tool_start_ts ))
+  _SF_TOOL_DURATIONS+=("${tool_name}:${_tool_dur}")
   # 1. Exit code: 124=timeout, 125+=error, 126=cannot invoke, 127=not found, 128+N=signal
   if [[ "${_SF_LAST_EXIT_CODE}" -ge 124 ]]; then
     _SF_TOOLS_FAILED+=("${tool_name}")
@@ -76,24 +81,36 @@ sf_track_run() {
 
 sf_write_manifest() {
   local session_dir="$1"
-  local profile="${2:-quick}"
+  local scan_mode="${2:-quick}"
   local scan_date
   scan_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   # Build JSON with Python (safe for arbitrary tool names)
-  python3 - "${session_dir}" "${profile}" "${scan_date}" <<'PYEOF'
+  python3 - "${session_dir}" "${scan_mode}" "${scan_date}" <<'PYEOF'
 import json, sys, os
 session_dir = sys.argv[1]
-profile = sys.argv[2]
+scan_mode = sys.argv[2]
 scan_date = sys.argv[3]
 tools_run = os.environ.get("SF_MANIFEST_TOOLS_RUN", "").split(",")
 tools_failed = os.environ.get("SF_MANIFEST_TOOLS_FAILED", "").split(",")
 tools_run = [t for t in tools_run if t]
 tools_failed = [t for t in tools_failed if t]
+# Parse tool durations ("tool:seconds,tool:seconds" → dict)
+dur_raw = os.environ.get("SF_MANIFEST_TOOL_DURATIONS", "")
+tool_durations = {}
+for entry in dur_raw.split(","):
+    entry = entry.strip()
+    if ":" in entry:
+        parts = entry.split(":", 1)
+        try:
+            tool_durations[parts[0]] = int(parts[1])
+        except ValueError:
+            pass
 manifest = {
     "tools_run": sorted(set(tools_run)),
     "tools_failed": sorted(set(tools_failed)),
+    "tool_durations": tool_durations,
     "scan_date": scan_date,
-    "profile": profile,
+    "scan_mode": scan_mode,
 }
 out = os.path.join(session_dir, "scan_manifest.json")
 with open(out, "w") as f:
@@ -112,10 +129,12 @@ main() {
   _pf_tmp="$(mktemp /tmp/secforge-preflight.XXXXXX)"
   trap '
     rm -f "${_pf_tmp:-}"
+    rm -f "${_SF_LOCK:-}"
     # Write partial manifest on early exit (Ctrl+C, crash, etc.)
     if [[ -n "${SECFORGE_SESSION_DIR:-}" ]] && [[ ! -f "${SECFORGE_SESSION_DIR}/scan_manifest.json" ]]; then
       SF_MANIFEST_TOOLS_RUN="$(IFS=,; echo "${_SF_TOOLS_RUN[*]:-}")" \
       SF_MANIFEST_TOOLS_FAILED="$(IFS=,; echo "${_SF_TOOLS_FAILED[*]:-}")" \
+      SF_MANIFEST_TOOL_DURATIONS="$(IFS=,; echo "${_SF_TOOL_DURATIONS[*]:-}")" \
       sf_write_manifest "${SECFORGE_SESSION_DIR}" "quick" 2>/dev/null || true
     fi
   ' EXIT
@@ -132,6 +151,19 @@ main() {
   rm -f "${_pf_tmp}"
   [[ -n "${SECFORGE_SESSION_DIR:-}" ]] || sf_die "Preflight did not set SECFORGE_SESSION_DIR."
 
+  # No-parallel-scan guard
+  _SF_LOCK="/tmp/secforge-scan.lock"
+  if ! (set -C; echo $$ > "${_SF_LOCK}") 2>/dev/null; then
+    sf_die "A scan is already running (lock: ${_SF_LOCK}). Wait for it to finish or remove the lock."
+  fi
+
+  # Dashboard status events
+  SECFORGE_DASHBOARD_STATUS="/tmp/secforge-dashboard-${SECFORGE_SESSION_ID}.status"
+  export SECFORGE_DASHBOARD_STATUS
+  ln -sf "${SECFORGE_DASHBOARD_STATUS}" /tmp/secforge-dashboard-latest.status 2>/dev/null || true
+
+  sf_emit_dashboard_event "{\"event\":\"scan_start\",\"target\":\"${SECFORGE_TARGET_HOST}\",\"profile\":\"${SECFORGE_STACK_PROFILE:-}\",\"scan_mode\":\"${SECFORGE_SCAN_MODE:-quick}\",\"tools_total\":${SECFORGE_EST_TOOLS_TOTAL:-0},\"est_seconds\":${SECFORGE_EST_SECONDS:-0}}"
+
   local timeout_web timeout_portscan
   timeout_web="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "TIMEOUT_WEB_SECONDS" || true)"
   timeout_portscan="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "TIMEOUT_PORTSCAN_SECONDS" || true)"
@@ -143,24 +175,30 @@ main() {
 
   # Tier 1 only.
   if [[ "${SECFORGE_TARGET_HOST}" != "this_server" ]]; then
-    if sf_tool wafw00f >/dev/null 2>&1; then
+    if sf_should_run_tool "wafw00f" && sf_tool wafw00f >/dev/null 2>&1; then
       sf_track_run wafw00f "${SECFORGE_SESSION_DIR}/webapp/wafw00f.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/wafw00f.log" "$(sf_tool wafw00f)" "${SECFORGE_TARGET_URL}" -f json -o "${SECFORGE_SESSION_DIR}/webapp/wafw00f.json"
     fi
 
-    if sf_tool whatweb >/dev/null 2>&1; then
+    if sf_should_run_tool "whatweb" && sf_tool whatweb >/dev/null 2>&1; then
       sf_track_run whatweb "${SECFORGE_SESSION_DIR}/webapp/whatweb.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/whatweb.log" "$(sf_tool whatweb)" "${SECFORGE_TARGET_URL}" "--log-json=${SECFORGE_SESSION_DIR}/webapp/whatweb.json"
     fi
 
-    if sf_tool nuclei >/dev/null 2>&1; then
+    if sf_should_run_tool "nuclei" && sf_tool nuclei >/dev/null 2>&1; then
       local _nuclei_tpl="${SECFORGE_ROOT}/tools/nuclei-templates"
       if [[ -d "${_nuclei_tpl}" ]]; then
-        sf_track_run nuclei "${SECFORGE_SESSION_DIR}/webapp/nuclei.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/nuclei.log" "$(sf_tool nuclei)" -duc -u "${SECFORGE_TARGET_URL}" -t "${_nuclei_tpl}" -json-export "${SECFORGE_SESSION_DIR}/webapp/nuclei.json"
+        local _nuclei_extra_args=()
+        if [[ -n "${SECFORGE_NUCLEI_TAGS:-}" ]] && [[ "${SECFORGE_SCAN_MODE:-quick}" == "quick" ]]; then
+          _nuclei_extra_args+=(-tags "${SECFORGE_NUCLEI_TAGS}")
+        elif [[ -n "${SECFORGE_NUCLEI_EXCLUDE_TAGS:-}" ]]; then
+          _nuclei_extra_args+=(-etags "${SECFORGE_NUCLEI_EXCLUDE_TAGS}")
+        fi
+        sf_track_run nuclei "${SECFORGE_SESSION_DIR}/webapp/nuclei.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/nuclei.log" "$(sf_tool nuclei)" -duc -u "${SECFORGE_TARGET_URL}" -t "${_nuclei_tpl}" "${_nuclei_extra_args[@]}" -json-export "${SECFORGE_SESSION_DIR}/webapp/nuclei.json"
       else
         sf_warn "Nuclei templates not found at ${_nuclei_tpl}. Skipping nuclei."
       fi
     fi
 
-    if sf_tool nmap >/dev/null 2>&1; then
+    if sf_should_run_tool "nmap" && sf_tool nmap >/dev/null 2>&1; then
       local nmap_timing nmap_top
       nmap_timing="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "NMAP_TIMING" || true)"
       nmap_top="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "NMAP_TOP_PORTS" || true)"
@@ -174,7 +212,7 @@ main() {
       sf_track_run nmap "${SECFORGE_SESSION_DIR}/network/nmap.xml" "${timeout_portscan}" "${SECFORGE_SESSION_DIR}/network/nmap.log" "$(sf_tool nmap)" "${nmap_timing}" -sV -sC --top-ports "${nmap_top}" -oX "${SECFORGE_SESSION_DIR}/network/nmap.xml" "${SECFORGE_TARGET_HOST}"
     fi
 
-    if sf_tool testssl.sh >/dev/null 2>&1; then
+    if sf_should_run_tool "testssl" && sf_tool testssl.sh >/dev/null 2>&1; then
       local ssl_target="${SECFORGE_TARGET_HOST}"
       if [[ -n "${SECFORGE_TARGET_PORT}" ]]; then
         ssl_target="${ssl_target}:${SECFORGE_TARGET_PORT}"
@@ -182,25 +220,40 @@ main() {
       sf_track_run testssl "${SECFORGE_SESSION_DIR}/ssl/testssl.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/ssl/testssl.log" "$(sf_tool testssl.sh)" --jsonfile "${SECFORGE_SESSION_DIR}/ssl/testssl.json" "${ssl_target}"
     fi
 
-    if [[ -r "${SCRIPT_DIR}/check-email-dns.sh" ]]; then
+    if sf_should_run_tool "check-email-dns" && [[ -r "${SCRIPT_DIR}/check-email-dns.sh" ]]; then
       chmod +x "${SCRIPT_DIR}/check-email-dns.sh" 2>/dev/null || true
-      sf_track_run emaildns "${SECFORGE_SESSION_DIR}/emaildns/emaildns.json" 60 "${SECFORGE_SESSION_DIR}/emaildns/emaildns.json" "${SCRIPT_DIR}/check-email-dns.sh" "${SECFORGE_TARGET_HOST}"
+      sf_track_run check-email-dns "${SECFORGE_SESSION_DIR}/emaildns/emaildns.json" 60 "${SECFORGE_SESSION_DIR}/emaildns/emaildns.json" "${SCRIPT_DIR}/check-email-dns.sh" "${SECFORGE_TARGET_HOST}"
+    fi
+
+    # Built-in web checks (zero-dep, ~5s, catches .env/.git/headers/cookies)
+    if sf_should_run_tool "secforge-builtin" && [[ "${SECFORGE_TARGET_HOST}" != "this_server" ]]; then
+      _SF_TOOLS_RUN+=("secforge-builtin")
+      local _builtin_start="$(date +%s)"
+      sf_builtin_web_checks "${SECFORGE_TARGET_URL%/}" "${SECFORGE_SESSION_DIR}/webapp/builtin.json" "${SECFORGE_SCAN_DELAY_MS:-200}"
+      local _builtin_dur=$(( $(date +%s) - _builtin_start ))
+      _SF_TOOL_DURATIONS+=("secforge-builtin:${_builtin_dur}")
+      if [[ ! -s "${SECFORGE_SESSION_DIR}/webapp/builtin.json" ]]; then
+        _SF_TOOLS_FAILED+=("secforge-builtin")
+      fi
     fi
   fi
 
   # Local Tier 1 hardening snapshot.
-  if sf_tool lynis >/dev/null 2>&1; then
+  if sf_should_run_tool "lynis" && sf_tool lynis >/dev/null 2>&1; then
     sf_track_run lynis "${SECFORGE_SESSION_DIR}/hardening/lynis.dat" "${timeout_portscan}" "${SECFORGE_SESSION_DIR}/hardening/lynis.stdout" "$(sf_tool lynis)" audit system --no-colors --logfile "${SECFORGE_SESSION_DIR}/hardening/lynis.log" --report-file "${SECFORGE_SESSION_DIR}/hardening/lynis.dat"
   fi
 
-  if sf_tool ssh-audit >/dev/null 2>&1 && [[ "${SECFORGE_TARGET_HOST}" != "this_server" ]]; then
+  if sf_should_run_tool "ssh-audit" && sf_tool ssh-audit >/dev/null 2>&1 && [[ "${SECFORGE_TARGET_HOST}" != "this_server" ]]; then
     sf_track_run ssh-audit "${SECFORGE_SESSION_DIR}/hardening/ssh-audit.json" 60 "${SECFORGE_SESSION_DIR}/hardening/ssh-audit.json" "$(sf_tool ssh-audit)" --json "${SECFORGE_TARGET_HOST}" || true
   fi
 
   # Write scan manifest before merging
   SF_MANIFEST_TOOLS_RUN="$(IFS=,; echo "${_SF_TOOLS_RUN[*]}")" \
   SF_MANIFEST_TOOLS_FAILED="$(IFS=,; echo "${_SF_TOOLS_FAILED[*]}")" \
+  SF_MANIFEST_TOOL_DURATIONS="$(IFS=,; echo "${_SF_TOOL_DURATIONS[*]}")" \
   sf_write_manifest "${SECFORGE_SESSION_DIR}" "quick"
+
+  sf_emit_dashboard_event "{\"event\":\"scan_done\",\"duration\":${SECONDS},\"total_findings\":0}"
 
   if [[ -r "${SCRIPT_DIR}/merge-reports.py" ]]; then
     sf_log "Merging reports..."
