@@ -11,6 +11,23 @@ export PYTHONDONTWRITEBYTECODE=1
 
 sf_die() { printf '[secforge] ERROR: %s\n' "$*" >&2; exit 1; }
 
+sf_start_dashboard() {
+  # Only works inside tmux or creates a new tmux session
+  if [[ -n "${TMUX:-}" ]]; then
+    # Already in tmux — split pane
+    tmux split-window -h -d -p 40 "bash ${SECFORGE_ROOT}/scripts/dashboard.sh --start"
+    tmux select-pane -t '{right}' -T secforge-dashboard 2>/dev/null || true
+  elif command -v tmux >/dev/null 2>&1; then
+    # Not in tmux — create session
+    tmux new-session -d -s secforge "bash ${SECFORGE_ROOT}/scripts/dashboard.sh --start"
+    tmux split-window -h -p 60 -t secforge
+    tmux select-pane -t secforge:0.0 -T secforge-dashboard 2>/dev/null || true
+    tmux attach -t secforge
+  else
+    echo "[secforge] WARN: tmux not available. Dashboard requires tmux." >&2
+  fi
+}
+
 show_help() {
   cat <<'EOF'
 SecForge — AI-guided security toolkit
@@ -20,6 +37,11 @@ Usage: secforge <command> [options]
 Scanning:
   scan <target>                Quick Tier-1 scan (passive/safe)
   scan --full <target>         Full scan (Tier 1 + Tier 2 opt-in)
+    --stack <profile>          Use stack profile (e.g., node-nginx, wordpress)
+    --skip <tools>             Skip specific tools (CSV)
+    --code-path <path>         Path to source code for secrets/dep scanning
+    --tier 1|2                 Override max tier level
+    --dashboard                Open live TUI dashboard in tmux pane
 
 Reporting:
   export --mode <mode> [opts]  Generate AI-ready markdown export
@@ -59,6 +81,22 @@ Management:
   accept SF-### --reason "..." Mark finding as accepted risk
   false-positive SF-### --reason "..." Mark as false positive
 
+Setup:
+  init                         Interactive setup wizard
+    --domain <domain>          Pre-authorize a domain (repeatable)
+    --environment prod|staging Set environment type
+    --payments yes|no          Enable payment security checks
+    --admin-ip <ip>            Whitelist admin IP for hardening
+    --reset                    Reset config from template (with backup)
+  install <tool> [tool...]     Install security tools from catalog
+  install --list               Show all available tools
+  install --all                Install all non-builtin tools
+  dashboard                    Open live TUI dashboard
+    --start                    Open dashboard pane (default)
+    --restart                  Kill and reopen dashboard
+    --last                     Show last scan's dashboard
+    --close                    Close dashboard pane
+
 Other:
   version                      Show SecForge version
   help                         Show this help
@@ -70,11 +108,29 @@ shift 2>/dev/null || true
 
 case "${cmd}" in
   scan)
-    if [[ "${1:-}" == "--full" ]]; then
-      shift
-      exec bash "${SCRIPT_DIR}/scan-all.sh" "$@"
+    _sf_full=0; _sf_dashboard=0; _sf_target=""
+    while [[ "${#}" -gt 0 ]]; do
+      case "$1" in
+        --full) _sf_full=1; shift ;;
+        --stack) export SECFORGE_STACK="${2:-}"; shift 2 ;;
+        --skip) export SECFORGE_SKIP="${2:-}"; shift 2 ;;
+        --code-path) export SECFORGE_CODE_PATH="${2:-}"; shift 2 ;;
+        --tier) export SECFORGE_TIER_OVERRIDE="${2:-}"; shift 2 ;;
+        --dashboard) _sf_dashboard=1; shift ;;
+        -*) sf_die "Unknown scan flag: $1" ;;
+        *) _sf_target="$1"; shift ;;
+      esac
+    done
+    [[ -z "${_sf_target}" ]] && sf_die "Usage: secforge scan <target> [--full] [--stack <profile>] [--skip <csv>] [--tier 1|2] [--code-path <path>] [--dashboard]"
+
+    if [[ "${_sf_dashboard}" -eq 1 ]]; then
+      sf_start_dashboard
+    fi
+
+    if [[ "${_sf_full}" -eq 1 ]]; then
+      exec bash "${SCRIPT_DIR}/scan-all.sh" "${_sf_target}"
     else
-      exec bash "${SCRIPT_DIR}/scan-quick.sh" "$@"
+      exec bash "${SCRIPT_DIR}/scan-quick.sh" "${_sf_target}"
     fi
     ;;
 
@@ -522,6 +578,167 @@ else:
     print(f\"Purged: {result['scans_deleted']} scans, {result['finding_scans_deleted']} finding_scan records\")
 state.close()
 " "$@"
+    ;;
+
+  init)
+    # Parse flags
+    _sf_domains=(); _sf_env=""; _sf_payments=""; _sf_admin_ip=""; _sf_reset=0
+    while [[ "${#}" -gt 0 ]]; do
+      case "$1" in
+        --domain) _sf_domains+=("${2:-}"); shift 2 ;;
+        --environment) _sf_env="${2:-}"; shift 2 ;;
+        --payments) _sf_payments="${2:-}"; shift 2 ;;
+        --admin-ip) _sf_admin_ip="${2:-}"; shift 2 ;;
+        --reset) _sf_reset=1; shift ;;
+        -h|--help) echo "Usage: secforge init [--domain <d>] [--environment prod|staging] [--payments yes|no] [--admin-ip <ip>] [--reset]"; exit 0 ;;
+        *) sf_die "Unknown init flag: $1" ;;
+      esac
+    done
+
+    _sf_cfg="${SECFORGE_ROOT}/config/secforge.conf"
+    _sf_example="${_sf_cfg}.example"
+    _sf_auth_file="${SECFORGE_ROOT}/config/.authorized_targets"
+
+    # Source _lib.sh for config helpers
+    # shellcheck source=/dev/null
+    . "${SCRIPT_DIR}/_lib.sh"
+
+    # --reset: backup + regenerate from template
+    if [[ "${_sf_reset}" -eq 1 ]]; then
+      if [[ -f "${_sf_cfg}" ]]; then
+        _sf_backup="${_sf_cfg}.bak.$(date +%Y%m%d_%H%M%S)"
+        cp "${_sf_cfg}" "${_sf_backup}"
+        echo "Backed up to ${_sf_backup}"
+      fi
+      if [[ -r "${_sf_example}" ]]; then
+        cp "${_sf_example}" "${_sf_cfg}"
+        echo "Config reset from template."
+      fi
+    fi
+
+    # Ensure config exists
+    if [[ ! -f "${_sf_cfg}" ]] && [[ -r "${_sf_example}" ]]; then
+      cp "${_sf_example}" "${_sf_cfg}"
+    fi
+
+    # Check for stale config (compare with .example for new keys)
+    if [[ -f "${_sf_cfg}" ]] && [[ -r "${_sf_example}" ]]; then
+      _sf_new_keys=()
+      while IFS= read -r _sf_line; do
+        _sf_key="${_sf_line%%=*}"
+        [[ -z "${_sf_key}" || "${_sf_key}" == "#"* || "${_sf_key}" == "${_sf_line}" ]] && continue
+        if ! grep -q "^${_sf_key}=" "${_sf_cfg}" 2>/dev/null; then
+          _sf_new_keys+=("${_sf_key}")
+        fi
+      done < "${_sf_example}"
+      if [[ "${#_sf_new_keys[@]}" -gt 0 ]]; then
+        echo "New config options available: ${_sf_new_keys[*]}"
+        echo "Run 'secforge init --reset' to regenerate config, or add them manually."
+      fi
+    fi
+
+    # If flags provided — merge-only mode (AI/scripted)
+    _sf_had_flags=0
+    if [[ "${#_sf_domains[@]}" -gt 0 ]]; then
+      _sf_had_flags=1
+      for _sf_d in "${_sf_domains[@]}"; do
+        sf_cfg_add_list_item "${_sf_cfg}" "DOMAIN" "${_sf_d}"
+        # Add to authorized targets
+        if [[ -w "${_sf_auth_file}" ]] || [[ ! -e "${_sf_auth_file}" ]]; then
+          if ! grep -Fqx "${_sf_d}" "${_sf_auth_file}" 2>/dev/null; then
+            printf '%s\n' "${_sf_d}" >> "${_sf_auth_file}"
+            echo "Authorized: ${_sf_d}"
+          fi
+        fi
+      done
+    fi
+    if [[ -n "${_sf_env}" ]]; then
+      _sf_had_flags=1
+      sf_cfg_set_value "${_sf_cfg}" "ENVIRONMENT" "${_sf_env}"
+    fi
+    if [[ -n "${_sf_payments}" ]]; then
+      _sf_had_flags=1
+      sf_cfg_set_value "${_sf_cfg}" "PAYMENTS" "${_sf_payments}"
+    fi
+    if [[ -n "${_sf_admin_ip}" ]]; then
+      _sf_had_flags=1
+      sf_cfg_set_value "${_sf_cfg}" "ADMIN_IP" "${_sf_admin_ip}"
+    fi
+
+    if [[ "${_sf_had_flags}" -eq 1 ]]; then
+      echo "Config updated: ${_sf_cfg}"
+      exit 0
+    fi
+
+    # Interactive wizard (TTY mode)
+    if [[ ! -t 0 ]]; then
+      echo "No flags and no TTY. Usage: secforge init --domain example.com --environment prod"
+      exit 2
+    fi
+
+    echo "=== SecForge Setup Wizard ==="
+    echo ""
+
+    # Domain
+    _sf_domain="$(sf_prompt_tty "What domain/URL do you want to scan?")"
+    if [[ -n "${_sf_domain}" ]]; then
+      sf_cfg_add_list_item "${_sf_cfg}" "DOMAIN" "${_sf_domain}"
+      if [[ -w "${_sf_auth_file}" ]] || [[ ! -e "${_sf_auth_file}" ]]; then
+        if ! grep -Fqx "${_sf_domain}" "${_sf_auth_file}" 2>/dev/null; then
+          printf '%s\n' "${_sf_domain}" >> "${_sf_auth_file}"
+        fi
+      fi
+    fi
+
+    # Environment
+    _sf_env_choice="$(sf_prompt_tty "Is this production or staging?" "production")"
+    sf_cfg_set_value "${_sf_cfg}" "ENVIRONMENT" "${_sf_env_choice}"
+
+    # Payments
+    _sf_pay="$(sf_prompt_tty "Does this site handle payments? (yes/no)" "no")"
+    sf_cfg_set_value "${_sf_cfg}" "PAYMENTS" "${_sf_pay}"
+
+    # Admin IP
+    _sf_auto_ip=""
+    if [[ -n "${SSH_CONNECTION:-}" ]]; then
+      _sf_auto_ip="$(echo "${SSH_CONNECTION}" | awk '{print $1}')"
+    fi
+    _sf_admin_ip_input="$(sf_prompt_tty "Admin IP for firewall whitelist" "${_sf_auto_ip}")"
+    if [[ -n "${_sf_admin_ip_input}" ]]; then
+      sf_cfg_set_value "${_sf_cfg}" "ADMIN_IP" "${_sf_admin_ip_input}"
+    fi
+
+    echo ""
+    echo "Config saved: ${_sf_cfg}"
+    echo ""
+    echo "Next: secforge scan ${_sf_domain:-example.com}"
+    ;;
+
+  install)
+    exec bash "${SCRIPT_DIR}/install-tools.sh" "$@"
+    ;;
+
+  dashboard)
+    case "${1:-}" in
+      --start|"")
+        sf_start_dashboard
+        ;;
+      --restart)
+        # Kill existing dashboard pane
+        tmux kill-pane -t secforge-dashboard 2>/dev/null || true
+        sf_start_dashboard
+        ;;
+      --last)
+        exec bash "${SECFORGE_ROOT}/scripts/dashboard.sh" --last
+        ;;
+      --close)
+        tmux kill-pane -t secforge-dashboard 2>/dev/null || true
+        echo "Dashboard closed."
+        ;;
+      *)
+        sf_die "Usage: secforge dashboard [--start|--restart|--last|--close]"
+        ;;
+    esac
     ;;
 
   status)
