@@ -6,6 +6,12 @@ This file is identical to `AGENTS.md` so both Claude Code and Codex can orchestr
 
 ## Session Start (always)
 
+0. Check prerequisites:
+   - Is gum installed? (`command -v gum`) If not, offer: "For the best experience, I recommend gum (pretty dashboard). Install it? (~5MB)"
+   - Is tmux running? If not, suggest: "I recommend running in tmux for the live dashboard. Start tmux first?"
+   - Does `config/secforge.conf` exist? If not, run `secforge init` for guided setup.
+   - Detect stack from project files + HTTP headers. Show detected profile from `catalog/profiles.json`.
+
 1. Ask what they want to do today:
    - Scan a website / web app
    - Harden this server (local)
@@ -41,9 +47,17 @@ Use the `secforge` CLI for all operations. It dispatches to the correct scripts/
 
 ### Scanning
 ```bash
-secforge scan example.com              # Quick Tier-1 scan
-secforge scan --full example.com       # Full scan (Tier 1 + Tier 2 opt-in)
+secforge scan example.com                                    # Quick Tier-1 scan
+secforge scan example.com --stack node-nginx --dashboard     # With stack profile + live dashboard
+secforge scan example.com --skip nmap,testssl                # Skip specific tools
+secforge scan example.com --code-path /var/www/myapp         # Include code/secrets scanning
+secforge scan --full example.com --tier 2                    # Full scan with Tier 2 opt-in
 ```
+
+Notes:
+- `--stack` is picked by the AI from `catalog/profiles.json` based on detected tech stack
+- `--dashboard` opens a live tmux pane showing scan progress
+- Always show the user how many tools and estimated time before starting
 
 ### After a scan — present results as fix packs
 Read `findings.json` which now contains `findings[]`, `clusters[]`, `fix_packs[]`, and `summary`.
@@ -301,15 +315,18 @@ Notes:
 | Checkov (IaC) | `checkov -d /path/to/iac --output json > /opt/secforge/reports/SESSION/iac/checkov.json` | JSON |
 | Prowler (cloud) | `prowler <provider> -M json -o /opt/secforge/reports/SESSION/cloud/` | JSON |
 
-## Scan Profiles (recommended defaults)
+## Scan Profiles
 
-- Quick Scan (Tier 1 only): wafw00f, WhatWeb, Nuclei, Nmap (top ports), testssl.sh, Lynis, ssh-audit, Email/DNS checks
-- Full Web Scan: Tier 1 baseline first, then offer Tier 2 opt-in tools
-- Safe System Audit: read-only system checks only (no hardening)
-- Full Server Hardening: audit first, then propose fixes with lockout prevention protocol
-- Payment Security Audit: Stripe check + SSL + secrets + focused web checks
-- Mobile App Audit: APK tools + APKLeaks
-- Dependency Check: OSV + npm/pip audits
+Read `catalog/profiles.json` for available stack profiles. Each profile specifies which tools to run.
+
+Available profiles: `node-nginx`, `node-bare`, `python-nginx`, `php-nginx`, `wordpress`, `java-spring`, `ruby-rails`, `static-nginx`, `go-bare`
+
+Quick Scan = `scan-quick.sh` with profile filtering. Full Scan = `scan-all.sh` with profile + Tier 2 opt-in.
+
+When no `--stack` is specified:
+- Preflight auto-detects from HTTP headers + code path files
+- High confidence (2+ signals, single match) → auto-applies profile
+- Low/tie/no confidence → runs legacy full tool set + tells user what it detected
 
 ## Report Merging
 
@@ -428,6 +445,50 @@ Update rules:
 - Prefer upgrading only SecForge-installed apt packages by default (`only-upgrade` style).
 - Offer a full system upgrade only with explicit confirmation.
 - Log before/after versions and failures to `/opt/secforge/logs/updates.log`.
+
+## Vibecoder UX Protocol
+
+### First-Time Setup
+When no `config/secforge.conf` exists:
+1. Check if gum + tmux are installed. If not: offer to install with explanation.
+2. Run the onboarding wizard: `secforge init` (asks domain, environment, payments, admin IP).
+3. Detect the stack from project files + HTTP headers.
+4. Read `catalog/profiles.json` and `catalog/tools.json` for profile + tool descriptions.
+5. Show recommended tools with explanations of what each does and why.
+6. Show tools NOT needed with explanations of why they're skipped.
+7. Suggest extras from profile `suggested_extras` with clear explanations.
+8. Let user choose (or accept recommendations). Install selected tools.
+9. Show install progress in dashboard pane.
+
+### Scanning Flow
+1. Always use `--dashboard` flag (opens tmux split pane for live progress).
+2. Show what will run, how long it will take, and ask for confirmation.
+3. Always include time estimates: "12 tools, ~8 min (based on last scan: 7m 23s)."
+4. Run: `secforge scan <target> --stack <profile> --code-path <path> --dashboard`
+5. Stay interactive while scan runs — answer questions, explain findings as they appear.
+6. When scan completes, present results from findings.json as fix packs (not raw findings).
+7. Never run Tier 2 on production without explicit warning about risks.
+
+### Tool Recommendations
+- Read `catalog/profiles.json` for the profile matching the detected stack.
+- Read `catalog/tools.json` for tool descriptions, tiers, and install info.
+- Explain WHY each tool is recommended and WHY others are skipped.
+- Always warn about Tier 2 risks before suggesting active scanners.
+
+### Dashboard Management
+- Open: `secforge scan ... --dashboard` (auto-splits tmux pane)
+- Read content: `tmux capture-pane -t secforge-dashboard -p`
+- Close: `secforge dashboard --close` (or user says "close the dashboard")
+- Reopen last summary: `secforge dashboard --last`
+- The pane stays open between scans. Clears and restarts on new scan.
+- User can ask "what's in the dashboard?" — capture pane content and summarize.
+
+### Returning Users
+When config exists and tools are installed:
+- Ask: "What are you looking for today?"
+- Offer: full rescan, quick check, verify fixes, something specific
+- Always show time estimates before scanning
+- Use `--skip` for targeted checks: "I just fixed headers, check only those"
 
 ## Rules (always)
 
