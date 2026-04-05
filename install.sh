@@ -105,19 +105,28 @@ main() {
   sf_need_root
   sf_require_ubuntu
 
-  sf_log "SecForge bootstrap installer"
-  sf_log "This will install packages (apt), create/update ${SECFORGE_DEST}, and run the menu installer."
+  sf_log "SecForge installer"
+  sf_log "This will clone SecForge to ${SECFORGE_DEST} and run the bootstrap."
   sf_confirm_tty "Type YES to continue:" "YES"
 
   sf_ensure_git
   sf_clone_or_update_repo "${SECFORGE_DEST}" "${SECFORGE_BRANCH}" "${SECFORGE_REPO_URL}"
 
-  if [[ ! -r "${SECFORGE_DEST}/scripts/install.sh" ]]; then
-    sf_die "Missing ${SECFORGE_DEST}/scripts/install.sh after clone. Repo may be incomplete."
+  if [[ ! -r "${SECFORGE_DEST}/scripts/bootstrap.sh" ]]; then
+    sf_die "Missing ${SECFORGE_DEST}/scripts/bootstrap.sh after clone. Repo may be incomplete."
   fi
 
-  sf_log "Starting SecForge menu installer..."
-  exec bash "${SECFORGE_DEST}/scripts/install.sh"
+  sf_log "Running bootstrap..."
+  export SECFORGE_ROOT="${SECFORGE_DEST}"
+  bash "${SECFORGE_DEST}/scripts/bootstrap.sh"
+
+  sf_log ""
+  sf_log "Bootstrap complete. To install security tools:"
+  sf_log "  secforge install --list    (see available tools)"
+  sf_log "  secforge install --all     (install everything)"
+  sf_log ""
+  sf_log "Or let Claude/Codex handle it:"
+  sf_log "  secforge init              (guided setup)"
 }
 
 main "$@"
