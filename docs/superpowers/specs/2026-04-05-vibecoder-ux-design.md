@@ -38,10 +38,10 @@ Single file: `catalog/profiles.json`. One entry per stack profile.
     "title": "Node.js + nginx",
     "description": "Express/Next.js/Nuxt behind nginx reverse proxy",
     "detect_files": ["package.json", "node_modules/", "next.config.js", "nuxt.config.ts"],
-    "detect_headers": {"X-Powered-By": "Express", "Server": "nginx"},
+    "detect_headers": {"X-Powered-By": "Express", "Server": "nginx"},  // case-insensitive contains match
     "tools_include": [
       "wafw00f", "whatweb", "nuclei", "nmap", "testssl", "ffuf",
-      "ssh-audit", "lynis", "gitleaks", "emaildns", "builtin"
+      "ssh-audit", "lynis", "gitleaks", "check-email-dns", "secforge-builtin"
     ],
     "tools_exclude": [
       "pip-audit", "osv-scanner", "apkdeeplens", "apkhunt", "apkleaks",
@@ -82,21 +82,182 @@ Single file: `catalog/profiles.json`. One entry per stack profile.
 | `static-nginx` | Static HTML/JS + nginx | Only HTML/CSS/JS files, Server: nginx |
 | `go-bare` | Go HTTP server | go.mod, no reverse proxy detected |
 
-Database detection is separate — always auto-detect: is MySQL running? Check it. Postgres? Check it. Redis? Check it. Not part of the profile.
+Database detection is separate — not part of the stack profile. Preflight auto-detects locally running databases and adds their check tools to `SECFORGE_TOOLS_PLANNED` only when the service is actually running:
+
+```bash
+# In preflight.sh (only for this_server target):
+if [[ "$target" == "this_server" || "$target" == "localhost" ]]; then
+  systemctl is-active mysql >/dev/null 2>&1 && add_to_planned "check-mysql"
+  systemctl is-active postgresql >/dev/null 2>&1 && add_to_planned "check-postgres"  # future
+  systemctl is-active redis >/dev/null 2>&1 && add_to_planned "check-redis"  # future
+fi
+```
+
+DB checks run in both quick and full modes for local targets (they take <10s and finding "MySQL has no root password" is critical). For remote targets: DB checks are never added (they can't connect). This keeps estimates and dashboard accurate — no "check-mysql: can't connect" noise on remote scans.
+
+### Canonical tool IDs
+
+One canonical ID per tool, used everywhere: `profiles.json` (tools_include/exclude), `scan_manifest.json` (tools_run/tools_failed/tool_durations), dashboard events, state DB fixed-gating, and `finding.tool` in findings.json.
+
+**Canonical = the parser's `finding.tool` value.** Scan scripts must write these exact IDs in `sf_track_run` calls and the manifest. Current mismatches to fix:
+
+| Scan script ID (current) | Parser/findings.json ID (canonical) | Action |
+|--------------------------|-------------------------------------|--------|
+| `emaildns` | `check-email-dns` | Change sf_track_run to `check-email-dns` |
+| `mysql` | `check-mysql` | Change sf_track_run to `check-mysql` |
+| `builtin` | `secforge-builtin` | Change sf_track_run to `secforge-builtin` |
+
+All other tool IDs already match (nuclei, nmap, wafw00f, testssl, gitleaks, etc.). This prevents subtle state gating bugs where a tool "succeeds" in the manifest but the DB can't match it to findings.
+
+**Friendly aliases for `secforge install`:** Users and Claude can type short names. An alias map in `bin/secforge` normalizes to canonical IDs internally:
+
+| User types | Normalizes to |
+|-----------|---------------|
+| `secforge install nmap` | `nmap` (already canonical) |
+| `secforge install emaildns` | `check-email-dns` |
+| `secforge install mysql` | `check-mysql` |
+| `secforge install builtin` | `secforge-builtin` |
+
+The alias map is only in the `install` command. Everywhere else (profiles, manifest, dashboard, state DB) uses canonical IDs only.
+
+### What profiles control (all 5 knobs, day one)
+
+All 5 knobs are active from day one — no phased rollout. Three are **enforced by code** (scan scripts/preflight), two are **consumed by the AI** (read from profiles.json, used in conversation):
+
+**Code-enforced (scan scripts change behavior):**
+1. **Tool selection** (`tools_include`/`tools_exclude`) — preflight builds `SECFORGE_TOOLS_PLANNED`, scan scripts gate each tool
+2. **Nuclei tag selection** (`nuclei_tags_boost`/`nuclei_tags_skip`) — behavior varies by scan mode:
+   - **Quick scan:** nuclei runs with `-tags <boost>` (filtered, fast — only stack-relevant templates). E.g., `-tags nodejs,express` runs ~200 templates instead of 9000.
+   - **Full scan:** nuclei runs unfiltered (all templates) but with `-etags <skip>` to exclude obviously irrelevant stacks. E.g., `-etags wordpress,php,java` saves time without losing relevant coverage.
+   - **No stack / low confidence:** nuclei runs fully unfiltered (today's behavior).
+3. **Endpoint probes** (`common_endpoints`) — **recon-only**, no new findings. Scan scripts probe these paths and record `{path, http_code, time_ms}` into `webapp/builtin.json` for AI context. The AI reads this to understand the target surface ("your /api/ is publicly accessible, /graphql returned 404"). Does NOT create findings — the existing nuclei + ffuf + builtin parser already handle discovery findings. Keeps us out of `scripts/secforge/*.py`.
+
+**AI-consumed (data in profiles.json, no Python module changes):**
+4. **Priority boosts** (`priority_boosts`) — the AI reads these and explains scoring context: "I'm prioritizing secrets findings for your Node.js stack because package.json often contains sensitive config." The scoring engine itself stays unchanged — the existing 7-factor scoring already produces good results. Boosts are AI guidance, not code multipliers.
+5. **Fix hints** (`fix_hints`) — the AI reads these and includes stack-specific advice in fix explanations: tells a Node user "add helmet middleware" not "edit wp-config.php." The export module stays unchanged — the AI wraps export output with stack context from the profile.
+
+This avoids modifying `scripts/secforge/*.py` while still giving vibecoders the full stack-aware experience. The AI is the consumer of knobs 4 and 5.
+
+### Field naming: profile vs scan_mode vs tier
+
+Three orthogonal dimensions, kept separate everywhere:
+
+| Field | Meaning | Values | Example |
+|-------|---------|--------|---------|
+| `profile` | Stack profile | `node-nginx`, `python-nginx`, `wordpress`, etc. | What stack are we scanning? |
+| `scan_mode` | Scan depth | `quick`, `full` | How many tools? |
+| `tier_max` | Aggressiveness | `1`, `2` | Passive only or active testing? |
+
+These appear in `scan_manifest.json`, `preflight.json`, dashboard events, and CLI flags. The existing `profile` field in manifests (which currently holds "quick"/"all") is renamed to `scan_mode`. The `profile` field now holds the stack profile name.
+
+A user can combine all three: `secforge scan example.com --stack node-nginx --full` runs the node-nginx profile in full mode. Add `SECFORGE_ASSUME_YES=1` for Tier 2.
+
+**Per-run tool exclusion with `--skip`:**
+
+```bash
+# Run node-nginx profile but skip nmap and lynis this time
+secforge scan example.com --stack node-nginx --skip nmap,lynis
+
+# "Quick check headers + TLS" = AI skips everything except what matters
+secforge scan example.com --stack node-nginx --skip nuclei,nmap,lynis,ssh-audit,gitleaks
+```
+
+No `--tools` include flag needed. The profile already includes the right tools. `--skip` is a CSV of canonical tool IDs to exclude from this run only. The AI uses this for "quick check" — no new mode, just skip flags.
+
+### Flag naming: `--stack` vs `--stack-hints`
+
+`--stack` means ONE thing: the profile name from `catalog/profiles.json`.
+
+| Command | Flag | Meaning |
+|---------|------|---------|
+| `secforge scan` | `--stack node-nginx` | Profile name (lookup in profiles.json, controls tools/tags/boosts) |
+| `secforge export` | `--stack-hints "nginx, node, mysql"` | Freeform text for AI front-matter (what tech the user runs) |
+
+The existing `--stack` on export is kept as a backward-compatible alias for `--stack-hints` (don't break existing usage). New code uses `--stack-hints` explicitly.
+
+### Preflight expands profiles into env vars
+
+`preflight.sh` is the only place that reads `catalog/profiles.json`. It resolves the stack profile and exports ready-to-use env vars so scan scripts never parse JSON:
+
+```bash
+# Exported by preflight.sh:
+SECFORGE_STACK_PROFILE="node-nginx"
+SECFORGE_TOOLS_PLANNED="wafw00f,whatweb,nuclei,nmap,testssl,ffuf,ssh-audit,lynis,gitleaks,check-email-dns,secforge-builtin"
+SECFORGE_TOOLS_SKIPPED="pip-audit,osv-scanner,apkdeeplens,wapiti,sqlmap"
+SECFORGE_NUCLEI_TAGS="nodejs,express,nextjs,javascript"
+SECFORGE_NUCLEI_EXCLUDE_TAGS="wordpress,joomla,drupal,php,java,spring"
+SECFORGE_COMMON_ENDPOINTS="/api/,/graphql,/.env,/.git/HEAD,/node_modules/"
+```
+
+Scan scripts use a simple gate before each tool:
+
+```bash
+# In scan-quick.sh / scan-all.sh, before each tool block:
+if ! sf_should_run_tool "nuclei"; then
+    sf_log "Skipping nuclei (not in profile)"
+else
+    sf_track_run nuclei ...
+fi
+```
+
+`sf_should_run_tool` checks if the canonical tool ID is in `SECFORGE_TOOLS_PLANNED`. **`tools_include` is a strict allowlist** — only tools in the allowlist can run. The full formula:
+
+```
+tools that run = (tools in scan script) ∩ (tools_include) − (tools_exclude) − (--skip) − (not installed) − (tier gated)
+```
+
+Scan scripts keep their existing tool blocks unchanged. Each block gets a one-line gate. If the tool isn't in `SECFORGE_TOOLS_PLANNED`, it's skipped with a log message. No JSON parsing in bash.
+
+**`--skip` validation:** Unknown tool names in `--skip` produce a warning and are ignored (best-effort). The scan continues. Example: `--skip nmapp` → `"[secforge] WARN: unknown tool 'nmapp' in --skip, ignoring."` The typo'd tool runs normally (safer than crashing — worst case an extra tool runs).
+
+**`TIER_MAX` config key:** The canonical config key is `TIER_MAX` (default: `1`). Replaces the old `DEFAULT_TIER` with clearer semantics — it's a ceiling, not a suggestion.
+
+- **Migration:** Preflight reads `TIER_MAX` first. If missing, falls back to `DEFAULT_TIER` for backward compat. Old configs keep working.
+- **`secforge init --tier 1|2`** writes `TIER_MAX=1` or `TIER_MAX=2` to config.
+- **`secforge scan --tier 2`** overrides for that run only (still requires YES prompt).
+
+**Enforcement by preflight.sh:**
+- `TIER_MAX=1` → ALL Tier 2 tool blocks are skipped silently in `scan-all.sh`, even with `--full`. The scan runs all Tier 1 tools for the profile but never touches Tier 2. `--full` means "all Tier 1 tools" not "bypass safety."
+- `TIER_MAX=2` → Tier 2 is allowed but still requires the existing per-scan "Type YES" confirmation prompt (current behavior preserved). Production users don't get surprised by active payloads.
+- `--tier 2` on command line overrides `TIER_MAX=1` for that run (explicit, deliberate).
+
+Two layers of protection: config ceiling + per-scan confirmation.
+
+### Tool selection scope: install vs scan
+
+**Gum multi-select (dashboard checkboxes) controls what gets INSTALLED** (downloaded to disk). It does NOT override which tools run during a scan.
+
+**Profile (`--stack`) controls what gets RUN** during a scan — but only from tools that are installed.
+
+The flow:
+1. User picks tools in dashboard (or Claude picks them) → installed to disk
+2. Profile says "run nuclei, nmap, testssl for node-nginx" → only runs these if installed
+3. If user installs extras (e.g., wapiti), Claude can suggest including them in future scans
+
+Scans stay deterministic via profile. Install is where user choice happens. For explicit scan-time overrides, `--tools-include`/`--tools-exclude` flags can be added later.
 
 ### CLI integration
 
 ```bash
-# AI passes the profile
-secforge scan example.com --stack node-nginx
+# AI passes the profile + code path
+secforge scan example.com --stack node-nginx --code-path /var/www/myapp
 
-# Scan scripts read the profile
-# In scan-quick.sh / scan-all.sh:
-#   1. Load catalog/profiles.json
-#   2. Read tools_include / tools_exclude for the given stack
-#   3. Skip excluded tools, only run included ones
-#   4. Pass nuclei_tags_boost as --tags if applicable
+# Full scan with all flags
+secforge scan example.com --full --stack node-nginx --code-path /var/www/myapp --dashboard
+
+# Env var still works as fallback (backwards compatible)
+SECFORGE_CODE_PATH=/var/www/myapp secforge scan example.com --stack node-nginx
 ```
+
+`--code-path` serves two purposes:
+1. Enables code-scanning tools (gitleaks, trufflehog, npm-audit, osv-scanner, pip-audit)
+2. Enables file-based stack detection (`detect_files` in profiles — preflight checks for package.json, requirements.txt, etc.)
+
+The `bin/secforge` wrapper passes `--code-path` to preflight.sh which exports `SECFORGE_CODE_PATH` for scan scripts. Scan scripts read the profile via `SECFORGE_STACK_PROFILE` (set by preflight):
+1. Load `catalog/profiles.json`
+2. Read `tools_include` / `tools_exclude` for the resolved stack
+3. Skip excluded tools, only run included ones
+4. Pass `nuclei_tags_boost` as `--tags` if applicable
 
 ### How the AI uses it
 
@@ -108,14 +269,106 @@ CLAUDE.md instructions tell the AI:
 5. Suggest extras from `suggested_extras` with explanations
 6. Pass `--stack <name>` to secforge scan
 
+### When `--stack` is NOT passed (auto-detect with confidence gating)
+
+If the user runs `secforge scan example.com` without `--stack`:
+- Preflight detects the stack from HTTP headers (see below)
+- **High confidence** (2+ matching signals, e.g., `X-Powered-By: Express` + `connect.sid` cookie):
+  - Auto-selects the matching profile
+  - Shows: "Detected: node-nginx (high confidence). Running 12/51 tools. Override with --stack."
+- **Low confidence** (only 1 weak signal, e.g., just `Server: nginx`):
+  - Runs the full default tool set (today's behavior)
+  - Hints: "Detected: possibly nginx. Consider --stack node-nginx for a faster, targeted scan."
+- **Tie between profiles** (e.g., node-nginx scores 2 AND python-nginx scores 2):
+  - Does NOT auto-apply either profile
+  - Runs the full default tool set (today's behavior)
+  - Hints: "Possible stacks: node-nginx (2 signals), python-nginx (2 signals). Pass --stack to choose."
+  - The AI reads this hint and asks the user which stack they're running
+- **No detection** (CDN/WAF stripping headers, or no matching signals):
+  - Runs the full default tool set (today's behavior)
+
+Auto-apply only fires when there is a **single clear winner** — one profile whose signal count meets `min_detect_signals` AND is strictly greater than all other profiles. Any ambiguity falls back to the safe default.
+
+This protects manual users from missing vulnerabilities due to a wrong guess. AI users always pass `--stack` explicitly — auto-detect is the fallback for humans.
+
+Each profile in `profiles.json` has a `min_detect_signals` field (default: 2). Auto-apply only triggers when the number of matching signals (`detect_headers` + `detect_files`) meets or exceeds this threshold AND no other profile ties.
+
 ### HTTP header fallback detection
 
-When no code path is available (remote-only scan), preflight.sh can do basic detection:
+When no code path is available (remote-only scan), preflight.sh does basic detection:
 - WhatWeb fingerprinting (already runs)
 - HTTP response headers: `Server`, `X-Powered-By`, `X-Generator`
 - Cookie names (e.g., `PHPSESSID` → PHP, `connect.sid` → Express)
 
-This populates `preflight.json` with a `detected_stack` field the AI or scan script can read.
+**Header matching is case-insensitive contains.** `"Server": "nginx"` matches `Server: nginx/1.24.0 (Ubuntu)`. This handles real-world header formats where versions, OS info, and extra text are appended.
+
+This populates `preflight.json` with a rich detection object:
+
+```json
+{
+  "stack_detection": {
+    "detected_stack": "node-nginx",
+    "confidence": "high",
+    "score": 2,
+    "threshold": 2,
+    "signals": ["header:server=nginx", "cookie:connect.sid"]
+  }
+}
+```
+
+This makes detection explainable — the AI can tell the user "I detected Node.js because your server returned `X-Powered-By: Express` and a `connect.sid` cookie." When detection is wrong, the signals show exactly why. The scan script reads `stack_detection.detected_stack` when no `--stack` flag is passed, and only auto-applies if `score >= threshold`.
+
+### Preflight is the single source of truth for stack resolution
+
+`preflight.sh` is the ONLY component that resolves the final stack profile. Nobody else does detection.
+
+**Flow:**
+1. `bin/secforge scan` forwards `--stack` (if provided) and `--scan-mode` to preflight.sh
+2. `preflight.sh` either:
+   - Uses the explicit `--stack` value (AI/user override — highest priority)
+   - Or auto-detects from HTTP headers + files (when no `--stack` passed)
+3. Preflight writes `stack_detection` to `preflight.json`
+4. Preflight exports env vars for scan scripts to consume:
+   - `SECFORGE_STACK_PROFILE=node-nginx` (resolved profile name, or empty)
+   - `SECFORGE_DETECTED_STACK=node-nginx` (what auto-detect found, for logging)
+   - `SECFORGE_DETECT_CONFIDENCE=high` (high/low/none)
+5. Scan scripts read `SECFORGE_STACK_PROFILE` — no detection logic, no profile loading, just "which tools do I skip?"
+
+**Why:** One place to debug, one place to fix. Scan scripts stay dumb tool runners. The AI reads `preflight.json` for explainability.
+
+**Preflight computes a runnable plan (not just a wish list):**
+
+```
+SECFORGE_TOOLS_PLANNED = (profile tools_include ∩ scan script tools)
+                        − tools_exclude − tier_gated − unknown_IDs − not_installed − --skip
+SECFORGE_TOOLS_MISSING = tools in profile include that aren't installed on disk
+```
+
+Preflight checks if each tool is actually installed (`sf_tool <id>` check). Missing tools are removed from PLANNED and added to MISSING. This means:
+- Time estimates are accurate (only count tools that will actually run)
+- Dashboard shows exactly what runs (no "skipped: not installed" clutter)
+- The AI sees MISSING and can offer: "2 recommended tools aren't installed. Want me to install them first?"
+- `sf_tool` checks in scan scripts stay as a safety net but should never fire
+
+**Profile validation against `tools.json`:** When preflight expands a profile's `tools_include` list, it cross-checks each tool ID against `catalog/tools.json`. Unknown IDs produce a warning and are skipped — the rest of the profile stays intact:
+
+```
+[secforge] WARN: profile 'node-nginx' references unknown tool 'nmappp', skipping it.
+```
+
+The scan runs with 11/12 valid tools. A typo in one tool ID does NOT cause a fallback to the full default toolset (that would be the opposite of what profiles do). Consistent with `--skip` validation: typos produce warnings, not crashes or mode switches.
+
+### Tool selection plumbing (tmux pane → main process)
+
+Two paths for tool selection:
+
+**AI path (common):** Claude picks tools and runs `secforge install nuclei nmap testssl` directly. No selection file needed.
+
+**Manual/dashboard path:** When the user manually selects tools in the dashboard pane via `gum choose --no-limit`:
+1. Dashboard pane writes newline-separated tool IDs to `/tmp/secforge-dashboard-<session>.selection`
+2. Main process polls for this file (with timeout + "cancelled" path if user closes pane)
+3. Main process reads selection and runs `secforge install --from-selection /tmp/secforge-...selection`
+4. Dashboard pane switches from tool selection view to install progress view
 
 ---
 
@@ -127,18 +380,183 @@ Before every scan, show how many tools will run and how long it will take. The A
 
 ### Implementation
 
-**Static defaults** in `catalog/profiles.json` — each tool has an `est_seconds` field:
+**Static defaults** from `catalog/tools.json` — the single source of truth for all per-tool metadata:
 
 ```json
 {
-  "tool_estimates": {
-    "nuclei": {"est_seconds": 90, "est_disk_mb": 5},
-    "nmap": {"est_seconds": 60, "est_disk_mb": 2},
-    "testssl": {"est_seconds": 30, "est_disk_mb": 1},
-    "lynis": {"est_seconds": 120, "est_disk_mb": 3}
+  "_meta": {
+    "version": "1.0",
+    "description": "Per-tool metadata. Used by: dashboard (descriptions), preflight (tier gating), estimator (defaults), installer (method)."
+  },
+  "nuclei": {
+    "title": "Nuclei",
+    "description": "Template-based vulnerability scanner for known issues and misconfigurations",
+    "tier": 1,
+    "est_seconds": 90,
+    "est_disk_mb": 45,
+    "install_method": "github_release",
+    "repo": "projectdiscovery/nuclei",
+    "expected_binary": "nuclei",
+    "depends_on": ["nuclei-templates"],
+    "check": {"command": "nuclei"}
+  },
+  "nuclei-templates": {
+    "title": "Nuclei Templates",
+    "description": "9000+ vulnerability detection templates for Nuclei",
+    "tier": 0,
+    "est_seconds": 0,
+    "est_disk_mb": 500,
+    "install_method": "git_clone",
+    "repo": "projectdiscovery/nuclei-templates",
+    "dest_path": "tools/nuclei-templates",
+    "check": {"path": "tools/nuclei-templates"}
+  },
+  "nmap": {
+    "title": "Nmap",
+    "description": "Discovers what ports and services are exposed to the internet",
+    "tier": 1,
+    "est_seconds": 60,
+    "est_disk_mb": 2,
+    "install_method": "apt",
+    "apt_packages": ["nmap"],
+    "check": {"command": "nmap"}
+  },
+  "testssl": {
+    "title": "testssl.sh",
+    "description": "Checks your SSL certificate and TLS encryption settings",
+    "tier": 1,
+    "est_seconds": 30,
+    "est_disk_mb": 5,
+    "install_method": "git_clone",
+    "repo": "testssl/testssl.sh",
+    "dest_path": "tools/testssl",
+    "expected_binary": "testssl.sh",
+    "check": {"command": "testssl.sh"}
+  },
+  "sqlmap": {
+    "title": "SQLMap",
+    "description": "SQL injection testing — sends real payloads to find database vulnerabilities",
+    "tier": 2,
+    "est_seconds": 180,
+    "est_disk_mb": 15,
+    "install_method": "apt",
+    "apt_packages": ["sqlmap"],
+    "check": {"command": "sqlmap"}
+  },
+  "zap": {
+    "title": "OWASP ZAP",
+    "description": "Active web scanner — sends many payloads to discover vulnerabilities",
+    "tier": 2,
+    "est_seconds": 600,
+    "est_disk_mb": 500,
+    "install_method": "custom",
+    "custom_function": "install_zap",
+    "check": {"command": "zap.sh"}
+  },
+  "wafw00f": {
+    "title": "wafw00f",
+    "description": "Detects if a Web Application Firewall is protecting your site",
+    "tier": 1,
+    "est_seconds": 5,
+    "est_disk_mb": 3,
+    "install_method": "pip_venv",
+    "pip_package": "wafw00f",
+    "check": {"command": "wafw00f"}
+  },
+  "ffuf": {
+    "title": "ffuf",
+    "description": "Directory and endpoint discovery by fuzzing common paths",
+    "tier": 1,
+    "est_seconds": 45,
+    "est_disk_mb": 10,
+    "install_method": "github_release",
+    "repo": "ffuf/ffuf",
+    "expected_binary": "ffuf",
+    "depends_on": ["wordlists"],
+    "check": {"command": "ffuf"}
+  },
+  "wordlists": {
+    "title": "SecLists Subset",
+    "description": "Curated wordlists for directory/password fuzzing",
+    "tier": 0,
+    "est_seconds": 0,
+    "est_disk_mb": 50,
+    "install_method": "custom",
+    "custom_function": "install_wordlists",
+    "check": {"path": "wordlists/directories.txt"}
+  },
+  "check-email-dns": {
+    "title": "Email/DNS Security Checks",
+    "description": "Checks SPF, DMARC, DKIM, DNSSEC records for your domain",
+    "tier": 1,
+    "est_seconds": 10,
+    "est_disk_mb": 0,
+    "install_method": "builtin",
+    "check": {"path": "scripts/check-email-dns.sh"},
+    "requires_commands": ["dig"]
   }
 }
 ```
+
+**Shared resources as pseudo-tools (`tier: 0`):**
+
+Some tools depend on shared resources (wordlists, template directories). These are modeled as `tier: 0` entries in `tools.json`:
+- `tier: 0` means "resource, not a scanner" — dashboard doesn't show it as a tool, estimator doesn't time it
+- Tools declare `depends_on: ["resource-id"]` — one level deep, no recursive resolution
+- `secforge install nuclei` sees `depends_on: ["nuclei-templates"]` and installs both automatically
+- Preflight considers a tool "installed" only if the binary exists AND all `depends_on` resources are present (e.g., nuclei binary + `tools/nuclei-templates/` directory)
+
+**Installedness check (`check` field):**
+
+Every tool in `tools.json` has a `check` object that tells preflight how to verify the tool is installed:
+
+| Check type | How it works | Example |
+|-----------|-------------|---------|
+| `{"command": "nuclei"}` | `command -v nuclei` or check `/opt/secforge/bin/nuclei` | Binary tools |
+| `{"path": "tools/nuclei-templates"}` | Check if path exists under `SECFORGE_ROOT` | Resources, directories, scripts |
+
+Optional `requires_commands` field lists system commands the tool needs (e.g., `check-email-dns` requires `dig`). Preflight warns if these are missing.
+
+This keeps installedness logic data-driven. Preflight reads `tools.json`, runs checks, outputs:
+- `SECFORGE_TOOLS_PLANNED` = tools that passed all checks
+- `SECFORGE_TOOLS_MISSING` = tools in profile but failed check
+
+**`INSTALLED_TOOLS` in config** stores canonical IDs from `tools.json` (not freeform strings). Updated by `secforge install` after successful installs.
+
+**`secforge install --list`** reads `tools.json`, runs each tool's `check`, shows installed vs available:
+```
+secforge install --list
+  ✓ nuclei         Tier 1  Template-based vulnerability scanner
+  ✓ nmap           Tier 1  Discovers what ports and services are exposed
+  ✗ gitleaks       Tier 1  Finds leaked secrets in your code
+  ✗ sqlmap         Tier 2  SQL injection testing (active payloads)
+  12/51 tools installed
+```
+
+**`install_method` enum:**
+
+| Method | What it does | JSON fields |
+|--------|-------------|-------------|
+| `builtin` | Always available (secforge-builtin, check-email-dns) | none |
+| `apt` | `apt-get install` | `apt_packages: ["pkg"]` |
+| `github_release` | Download binary from GitHub release | `repo`, `expected_binary` |
+| `git_clone` | Clone repo into tools/ | `repo`, `dest_path`, `expected_binary` |
+| `pip_venv` | Install in SecForge's Python venv | `pip_package` |
+| `npm_local` | npm install in a local dir | `npm_package`, `dest_path` |
+| `custom` | Dedicated function in `install-tools.sh` | `custom_function` |
+
+~70% of tools are `apt` or `github_release` (one-liner installs). ~20% are `git_clone` or `pip_venv`. ~10% are `custom` (ZAP, Commix, Observatory — oddballs needing multi-step scripts). The `custom` method keeps `tools.json` clean while giving `install-tools.sh` a named function to implement the weird cases.
+
+**Why a separate `catalog/tools.json` (not in profiles.json):** Profiles are about stacks ("for node-nginx, include nuclei"). Tool metadata is about tools ("nuclei is Tier 1, ~90s, scans for vulns"). Different concerns, different update patterns. `tools.json` is the single source of truth for:
+- Dashboard `gum choose` descriptions and tier badges
+- Tier gating in preflight.sh (reads `tier` field)
+- Cost estimator static defaults (reads `est_seconds`)
+- Install registry (reads `install_method` + `install_source`)
+- AI tool explanations (reads `description`)
+
+**Duration units:** Integer seconds (rounded). Bash `$SECONDS` and `date +%s` give integers naturally — no floating point math in scan scripts. Plenty accurate for "~8 minutes" estimates.
+
+**History source:** Estimator reads past `tool_durations` from `scan_manifest.json` files on disk (no DB changes). Globs for matching sessions: `ls -1dt /opt/secforge/reports/20*_${target}*/scan_manifest.json | head -5`
 
 **Historical refinement** — after each scan, record actual tool durations in `scan_manifest.json`:
 
@@ -152,11 +570,23 @@ Before every scan, show how many tools will run and how long it will take. The A
     "testssl": 28
   },
   "profile": "node-nginx",
+  "scan_mode": "quick",
+  "tier_max": 1,
   "scan_date": "2026-04-05T01:00:00Z"
 }
 ```
 
-The estimator reads the latest manifest for the same target+profile. If historical data exists, use it. Otherwise use static defaults.
+The estimator uses a 3-level lookup chain per tool, keyed to avoid cross-pollination between different scan configurations:
+
+1. **Exact match:** `(target_host, stack_profile, scan_mode, tool_id)` — same target, same profile, same mode. Uses **median of last 5 scans** (robust to outliers — one slow network day doesn't ruin the estimate).
+2. **Partial match:** `(target_host, tool_id)` — same target, any profile/mode. Median of last 5. Less accurate but better than guessing.
+3. **Static default:** `tool_estimates.<tool_id>.est_seconds` from `catalog/profiles.json`. Generic fallback for first scan or new targets.
+
+**Why median, not average or last-only:** If nuclei took [45, 48, 50, 120, 200] across 5 scans, median=50s (realistic), average=92s (skewed by one slow run), last=200s (noisy). Median gives the user an honest estimate.
+
+This matters because nuclei with filtered templates (`node-nginx` profile) takes ~45s, but nuclei unfiltered takes ~120s. Using the wrong estimate would mislead the user.
+
+The lookup reads `tool_durations` from `scan_manifest.json` files in previous session directories on disk. Match by globbing `/opt/secforge/reports/20*_<target>*/scan_manifest.json`, reading `profile` and `scan_mode` from each manifest to find exact matches. No state DB involved — purely filesystem-based.
 
 ### How the AI presents it
 
@@ -281,7 +711,9 @@ Claude: "Starting scan of example.com (node-nginx profile)...
 
 ### `secforge init` command
 
-A simple command that writes config programmatically (for when the AI calls it):
+Dual-mode: flags for AI, interactive wizard for humans.
+
+**With flags (AI path — no prompts):**
 
 ```bash
 secforge init \
@@ -291,6 +723,45 @@ secforge init \
   --tier 1 \
   --admin-ip 203.0.113.5
 ```
+
+**Without flags on a TTY (human path — interactive wizard):**
+
+```bash
+secforge init
+# → launches gum wizard (or plain read prompts if gum missing)
+# → asks the 5 questions with explanations
+# → saves config
+```
+
+**Detection logic:**
+- Has flags? → Use them, no prompts. Missing optional flags use safe defaults.
+- No flags + TTY detected (`[ -t 0 ]`)? → Interactive wizard via gum (or plain `read` fallback).
+- No flags + no TTY? → Error: `"Usage: secforge init --domain <domain> --tier <1|2> ..."` (exit 2).
+
+**Admin IP auto-detection:** In interactive mode (TTY), the wizard reads `SSH_CONNECTION` env var to prefill the admin IP:
+```
+Your IP for safe hardening? 203.0.113.5 (auto-detected from SSH) [Enter to confirm]:
+```
+User presses Enter to accept, or types a different IP (VPN, multiple IPs). If no SSH session detected, prompts without a default. In non-interactive (AI/flag) mode: only set if `--admin-ip` is explicitly passed — no auto-detect surprises.
+
+This is how every good CLI works. The AI always passes flags. Humans type `secforge init` and get the beautiful wizard. Nobody needs to remember `--interactive`.
+
+**Re-running `secforge init`:** Three behaviors depending on how it's called:
+
+- **Interactive (no flags, TTY):** Wizard shows current config values as defaults. User presses Enter to keep each one, types to change. Only touched keys are updated. Untouched keys (INSTALLED_TOOLS, timeouts, custom knobs) are preserved. If onboarding keys are missing (domain, tier, etc.), wizard prompts for them.
+- **AI with flags:** Merge — only provided flags are updated. `secforge init --tier 2` changes tier, leaves everything else alone.
+- **`--reset` flag:** Full regenerate from template. Starts fresh. For corrupted config or clean slate.
+
+**Always:** Timestamped backup written before any changes: `config/secforge.conf.bak.2026-04-05T012345`. Rollback is always possible.
+
+**Stale config detection:** If `config/secforge.conf.example` has keys not present in the user's config, print a short summary after init:
+```
+New config options available (not yet in your config):
+  SCAN_DELAY_MS — delay between requests (default: 200)
+  CIRCUIT_BREAKER_THRESHOLD — pause if target responds slowly (default: 10s)
+Run 'secforge init' to configure them, or they'll use safe defaults.
+```
+Does NOT auto-inject new keys — the user decides when to adopt them.
 
 Writes to `config/secforge.conf` and `config/.authorized_targets`. The AI can also write these files directly — `secforge init` is a convenience wrapper.
 
@@ -320,6 +791,33 @@ Two processes:
 1. **Scanner** (existing bash scripts) — runs tools, writes status lines to a file
 2. **Renderer** (new `dashboard.sh`) — watches the status file, redraws with gum
 
+**Renderer loop:** `dashboard.sh` runs a 1-second redraw loop with SIGWINCH handling:
+
+```bash
+trap 'redraw' WINCH  # terminal resize → immediate redraw
+
+while true; do
+  read_new_events    # check status file for new JSON lines since last read
+  redraw             # update display: tool list, elapsed timer, progress bar, findings count
+  sleep 1            # 1s tick keeps elapsed/progress live between events
+done
+```
+
+This handles three things:
+- **New events:** tool starts/finishes → update tool status
+- **Timer tick:** "elapsed: 2m 31s" updates every second, progress bar moves smoothly
+- **Terminal resize:** SIGWINCH trap redraws immediately with new dimensions (`tput cols`/`tput lines`)
+
+Without the timer, the elapsed counter and progress bar freeze between tool events. Without SIGWINCH, resizing garbles the display until the next event.
+
+**Status file rotation:** One file per scan session, not a global append file:
+- Path: `/tmp/secforge-dashboard-${SECFORGE_SESSION_ID}.status`
+- Symlink: `/tmp/secforge-dashboard-latest.status` → current session file
+- `secforge dashboard --restart` points the renderer at the new file (old file stays as debug breadcrumb)
+- `secforge dashboard --last` reads the symlink to find the most recent session
+- No seek/offset logic needed — each file is one scan, read from top to bottom
+- Old status files auto-cleaned on next scan (or by OS /tmp cleanup)
+
 This keeps the scan scripts almost unchanged — just add a few `echo` calls to write status.
 
 ### Status file format
@@ -333,6 +831,8 @@ Each line is a JSON object appended to the status file:
 {"event": "tool_start", "tool": "nmap", "index": 2}
 {"event": "tool_done", "tool": "nmap", "index": 2, "duration": 45, "findings": 1, "status": "ok"}
 {"event": "tool_fail", "tool": "masscan", "index": 5, "error": "requires root"}
+{"event": "tier2_prompt", "message": "Type YES in the main pane to run Tier 2 active tests"}
+{"event": "tier2_approved"}
 {"event": "scan_done", "duration": 443, "total_findings": 19, "severity": {"high": 2, "medium": 13, "low": 1, "info": 3}}
 ```
 
@@ -397,10 +897,35 @@ Each line is a JSON object appended to the status file:
 │  4. TLS Hardening   (3 findings, medium)           │
 │  5. Network         (1 finding,  medium)           │
 │                                                     │
-│  Type in Claude: "fix the headers" to start        │
-│  Press q or Ctrl+D to close this panel             │
+│  Next: tell Claude "fix the headers" or run:        │
+│  secforge export --mode fix-pack --pack             │
+│    http-header-hardening                            │
+│                                                     │
+│  Press q or Ctrl+D to close this panel              │
 └─────────────────────────────────────────────────────┘
 ```
+
+**During Tier 2 confirmation (waiting for user):**
+```
+┌─ SecForge — Scanning example.com ──────────────────┐
+│                                                     │
+│  ✓ wafw00f       3s     0 findings                 │
+│  ✓ nuclei       87s     8 findings  (1H 5M 2I)    │
+│  ✓ nmap         45s     1 finding                  │
+│  ...                                                │
+│                                                     │
+│  ┌────────────────────────────────────────────────┐ │
+│  │  ⚠️  TIER 2 CONFIRMATION NEEDED               │ │
+│  │  Type YES in the left pane to run              │ │
+│  │  active tests, or anything else to skip        │ │
+│  └────────────────────────────────────────────────┘ │
+│                                                     │
+│  Findings: 9  (1 high, 5 medium, 3 info)           │
+│  Elapsed: 3m 12s  /  ~8 min estimated              │
+└─────────────────────────────────────────────────────┘
+```
+
+The scan script emits `tier2_prompt` before the TTY prompt and `tier2_approved` or `tier2_skipped` after the user responds. Two extra JSON lines, dashboard renders a banner.
 
 **During verification:**
 ```
@@ -441,15 +966,60 @@ tmux kill-pane -t secforge-dashboard          # close
 tmux capture-pane -t secforge-dashboard -p    # read content
 ```
 
+### Dashboard auto-open semantics
+
+Three scenarios based on tmux state:
+
+**Already in tmux (most common — AI always sets this up):**
+- Auto-split pane, no `--dashboard` flag needed
+- Dashboard appears in right pane automatically
+- This is the default experience for AI-guided usage
+
+**Not in tmux + `--dashboard` flag passed:**
+- Start a new tmux session, split pane, attach
+- The user explicitly asked for the dashboard — give it to them
+```bash
+tmux new-session -d -s secforge "secforge scan example.com --stack node-nginx --dashboard"
+tmux split-window -h -t secforge
+tmux select-pane -t secforge:0.0
+tmux attach -t secforge
+```
+
+**Not in tmux + no `--dashboard` flag (manual CLI user):**
+- Run inline with gum spinners (pretty but not split-pane)
+- Print hint after scan starts: `"Tip: run inside tmux or pass --dashboard for a live split-pane view."`
+- No surprise tmux session creation
+
+The AI (CLAUDE.md instructions) always uses `--dashboard` when orchestrating. Manual users get the hint and can opt in.
+
 ### Graceful degradation
 
 | Condition | Behavior |
 |-----------|----------|
-| tmux not available | Scan runs inline with gum spinners (pretty but not split-pane) |
-| gum not installed | Plain text output (sf_log as today) |
+| In tmux + gum installed | Full dashboard experience (auto-split pane) |
+| In tmux + no gum | Plain text dashboard in split pane + message: "Install gum for a better experience" |
+| Not in tmux + `--dashboard` | Start tmux session + split pane + attach |
+| Not in tmux + no flag | Inline gum spinners + hint: "Run inside tmux or pass --dashboard" |
+| gum not installed | Plain text fallback for all features (dashboard, tool selection, spinners) |
+| tmux not installed | No split pane possible, inline output only |
 | Not a terminal (`[ ! -t 1 ]`) | JSON progress to stdout (`--quiet` mode) |
 | `--quiet` flag | JSON lines to stdout for AI consumption |
-| tmux available, gum available | Full dashboard experience |
+
+**AI must check and recommend gum + tmux:** CLAUDE.md instructs the AI to check for gum and tmux on first interaction. If either is missing:
+```
+Claude: "For the best SecForge experience, I recommend installing gum (pretty UI)
+         and tmux (live dashboard). Want me to install them?
+         - gum: 5MB binary, makes menus and progress bars beautiful
+         - tmux: terminal multiplexer, lets you see scan progress while we chat
+         Without them, SecForge still works but with plain text output."
+```
+The AI offers to install both. If the user declines, SecForge degrades gracefully — no crashes, just less pretty.
+
+**Per-feature fallback without gum:**
+- Dashboard: plain text redraws (clear screen + printf, no fancy boxes)
+- Tool selection: numbered list + `read` prompt from `/dev/tty`
+- Spinners/progress: plain `sf_log` lines (today's behavior)
+- No minimum gum version — if a specific gum flag fails, catch error and fall back to plain text for that call
 
 ### `--dashboard` flag on scan commands
 
@@ -458,19 +1028,11 @@ secforge scan example.com --stack node-nginx --dashboard
 ```
 
 Behavior:
-1. Check if tmux is running
+1. Check if inside tmux (`$TMUX` set?)
 2. If yes: create/restart `secforge-dashboard` pane, run dashboard.sh in it
-3. Start scan in the current pane (or background if AI is orchestrating)
+3. If no: start tmux session, split, attach (user explicitly requested dashboard)
 4. Scan writes status events to the status file
 5. Dashboard renderer picks them up and redraws
-
-If tmux is NOT running but `--dashboard` is passed, start a tmux session first:
-```bash
-tmux new-session -d -s secforge "secforge scan example.com --stack node-nginx --dashboard"
-tmux split-window -h -t secforge
-tmux select-pane -t secforge:0.0
-tmux attach -t secforge
-```
 
 ---
 
@@ -498,9 +1060,19 @@ cd /opt/secforge && sudo scripts/bootstrap.sh
 - Creates `/opt/secforge/` directory structure
 - Creates `secforge` group + runtime dirs (state/, reports/, backups/, config/)
 - Installs base deps: `python3`, `curl`, `jq`, `git`, `tmux`
-- Downloads `gum` binary to `/opt/secforge/bin/`
+- Downloads `gum` binary to `/opt/secforge/bin/` (pinned to major.minor, e.g., `v0.14.x` — accepts patch updates for bug fixes, avoids breaking changes. Version pinned in bootstrap.sh, updated intentionally with SecForge releases)
 - Adds `/opt/secforge/bin` to PATH
 - Does NOT install any security tools
+- Does NOT start tmux (runs as root/sudo — user or AI starts tmux later as their own user)
+
+Prints next steps on completion:
+```
+SecForge installed to /opt/secforge/
+  gum ✓  tmux ✓  python3 ✓
+
+Next: open Claude Code or Codex in /opt/secforge/ and say "scan my site"
+Or:   secforge init (to configure manually)
+```
 
 Result: SecForge is ready for AI-guided tool selection. ~50MB, ~30 seconds.
 
@@ -513,13 +1085,30 @@ The AI calls existing install scripts selectively:
 secforge install nuclei nmap testssl gitleaks ssh-audit lynis
 ```
 
-This dispatches to the existing category installers:
-- `nuclei` → `scripts/install-dependencies.sh` (subset)
-- `nmap` → `apt-get install nmap`
-- `testssl` → `scripts/install-dependencies.sh` (subset)
-- etc.
+`secforge install` installs **individual tools**, not category bundles. When the user picks `nuclei` in the dashboard, they get nuclei — not nuclei + ffuf + wafw00f + ZAP + nikto. This is the core difference from the old menu installer.
 
-The `secforge install` command maps tool names to install methods.
+A **tool install registry** in `bin/secforge` (or a JSON data file) maps each canonical tool ID to its specific install method:
+
+```bash
+# Per-tool install methods (in bin/secforge install handler):
+case "$tool" in
+  nuclei)            install_github_binary "projectdiscovery/nuclei" ;;
+  nmap)              apt_install "nmap" ;;
+  testssl)           git_clone_tool "testssl/testssl.sh" "tools/testssl" ;;
+  gitleaks)          install_github_binary "gitleaks/gitleaks" ;;
+  lynis)             apt_install "lynis" ;;
+  ssh-audit)         apt_install "ssh-audit" ;;
+  wafw00f)           pip_venv_install "wafw00f" ;;
+  ffuf)              install_github_binary "ffuf/ffuf" ;;
+  sqlmap)            apt_install "sqlmap" ;;
+  trivy)             install_github_binary "aquasecurity/trivy" ;;
+  check-email-dns)   : ;; # built-in script, always available
+  secforge-builtin)  : ;; # built-in, always available
+  *)                 sf_warn "Unknown tool: $tool" ;;
+esac
+```
+
+The existing `scripts/install-*.sh` category scripts are preserved for `secforge install --all` and the manual menu installer. Per-tool install extracts the individual install logic (most are one-liners: apt, GitHub binary, git clone, or pip in venv).
 
 **Phase 3: Full install option** (still available)
 
@@ -549,48 +1138,85 @@ This shows the existing bash menu with category checkboxes (Install Everything /
 
 ## CLAUDE.md / AGENTS.md Updates
 
-### New section: Vibecoder UX Protocol
+**Scope: B (append + small surgical edits).** Don't rewrite — the existing tool tables, safety protocols, lockout prevention, and fix workflows are correct and tested. Only change what's needed for the new features.
+
+### Existing sections to edit (small, targeted)
+
+**1. "Session Start" section** — add these steps at the beginning:
+- Check if gum + tmux are installed. If not, offer to install: "For the best experience, I recommend gum (pretty UI) and tmux (live dashboard). Want me to install them?"
+- Check if `config/secforge.conf` exists. If not, run onboarding wizard via `secforge init`.
+- Detect stack from project files. Show detected profile.
+- All existing Session Start steps (authorization, tier preference, system discovery) still apply after setup.
+
+**2. "v2 CLI Workflow / Scanning" section** — update examples:
+- `secforge scan example.com` → `secforge scan example.com --stack node-nginx --dashboard`
+- Add `--code-path /var/www/myapp` to examples where code scanning is shown
+- Add `--skip tool1,tool2` example
+- Note that `--stack` is picked by the AI from `catalog/profiles.json`
+- Add time estimate note: "Always show the user how many tools and how long before starting"
+
+**3. "Scan Profiles" section** — update to reference `--stack` profiles:
+- Replace the current static list with "Read `catalog/profiles.json` for available profiles"
+- Add: "Quick Scan = scan-quick.sh with profile. Full Scan = scan-all.sh with profile + Tier 2 opt-in"
+
+### New section to append: Vibecoder UX Protocol
 
 ```markdown
 ## Vibecoder UX Protocol
 
 ### First-Time Setup
 When no config/secforge.conf exists:
-1. Check if tmux is running. If not: "I'll set up tmux for a better experience"
-   and install/start it.
+1. Check if gum + tmux are installed. If not: offer to install with explanation of what each does.
 2. Run the onboarding wizard (ask the 5 questions, explain each one).
 3. Save config with `secforge init`.
 4. Detect the stack from project files + HTTP headers.
-5. Show recommended tools with explanations. Let user choose.
-6. Install selected tools (show progress in dashboard pane).
+5. Read `catalog/profiles.json` and `catalog/tools.json` to get profile + tool descriptions.
+6. Show recommended tools with explanations of what each does and why.
+7. Show tools NOT needed with explanations of why they're skipped.
+8. Suggest extras from `suggested_extras` with clear explanations.
+9. Let user choose (or accept recommendations). Install selected tools.
+10. Show install progress in dashboard pane.
 
 ### Scanning Flow
-1. Always open the dashboard pane (tmux split) before scanning.
-2. Show what will run, how long it will take, and ask for confirmation.
-3. Always include time estimates based on historical data or defaults.
-4. Run scan with `secforge scan <target> --stack <profile> --dashboard`.
+1. Always use `--dashboard` flag (opens tmux split pane for live progress).
+2. Show what will run, how long it will take (from estimator), and ask for confirmation.
+3. Always include time estimates: "12 tools, ~8 min (based on last scan: 7m 23s)."
+4. Run scan with `secforge scan <target> --stack <profile> --code-path <path> --dashboard`.
 5. Stay interactive while scan runs — answer questions, explain findings.
-6. When scan completes, present results from findings.json as fix packs.
+6. When scan completes, present results from findings.json as fix packs (not raw findings).
+7. Always explain Tier 2 risks before running active scanners. Never run Tier 2 on production without explicit warning.
 
 ### Tool Recommendations
-- Read catalog/profiles.json to get the profile for the detected stack.
+- Read `catalog/profiles.json` to get the profile for the detected stack.
+- Read `catalog/tools.json` for tool descriptions, tiers, and install info.
 - Explain WHY each tool is recommended and WHY others are skipped.
-- Suggest extras from suggested_extras with clear explanations.
-- Always warn about Tier 2 risks before running active scanners.
+- Suggest extras from `suggested_extras` with clear explanations.
+- Always warn about Tier 2 risks. Show the risk explanation from CLAUDE.md.
 
 ### Dashboard Management
-- Open: secforge dashboard --start (or pass --dashboard to scan)
-- Read content: tmux capture-pane -t secforge-dashboard -p
-- Close: secforge dashboard --close (or user says "close the dashboard")
-- Reopen summary: secforge dashboard --last
-- The pane stays open between scans. Clear and restart on new scan.
+- Open: `secforge scan ... --dashboard` (auto-splits tmux pane)
+- Read content: `tmux capture-pane -t secforge-dashboard -p`
+- Close: `secforge dashboard --close` (or user says "close the dashboard")
+- Reopen summary: `secforge dashboard --last`
+- The pane stays open between scans. Clears and restarts on new scan.
+- User can ask "what's in the dashboard?" — capture pane content and summarize.
 
 ### Returning Users
 When config exists and tools are installed, ask:
 - "What are you looking for today?"
 - Offer: full rescan, quick check, verify fixes, something specific
 - Always show time estimates
+- Use `--skip` for targeted quick checks: "I just fixed headers, check only those"
 ```
+
+### What does NOT change in CLAUDE.md
+- Tool command tables (all 14 categories) — still correct
+- Safety protocols / lockout prevention — critical, tested, don't touch
+- Fix application workflow (backup → apply → verify → mark fixed)
+- Report merging / findings.json schema
+- "Never do these" rules
+- Update procedures
+- Tiered scanning explanations (just add `TIER_MAX` reference)
 
 ---
 
@@ -600,16 +1226,17 @@ When config exists and tools are installed, ask:
 | File | What |
 |------|------|
 | `catalog/profiles.json` | 9 stack profiles with all 5 knobs |
+| `catalog/tools.json` | Per-tool metadata: tier, description, estimates, install method (single source of truth) |
 | `scripts/bootstrap.sh` | Minimal installer (base deps + gum + tmux) |
-| `scripts/dashboard.sh` | Dashboard renderer (reads status file, draws with gum) |
-| `scripts/secforge/dashboard.py` | Tool selection UI helper (gum choose wrapper) |
+| `scripts/install-tools.sh` | Per-tool install registry (sources _lib.sh, enforces root, individual tool installs + alias normalization) |
+| `scripts/dashboard.sh` | Dashboard renderer (reads status file, draws with gum) + tool selection UI (gum choose, pure Bash) |
 
 ### Modified files
 | File | Change |
 |------|--------|
 | `bin/secforge` | Add `init`, `install`, `dashboard` subcommands + `--stack`/`--dashboard` flags |
-| `scripts/scan-quick.sh` | Read profile, skip excluded tools, write status events to dashboard file |
-| `scripts/scan-all.sh` | Same |
+| `scripts/scan-quick.sh` | Read profile, skip excluded tools, write status events to dashboard file, **add secforge-builtin web checks** (currently only in scan-all.sh — zero-dep, 5s, catches .env/.git/headers/cookies) |
+| `scripts/scan-all.sh` | Same (already has builtin checks) |
 | `scripts/preflight.sh` | Add `detected_stack` to preflight.json from HTTP headers |
 | `install.sh` | Rework to call bootstrap.sh (minimal) instead of full menu |
 | `CLAUDE.md` | Add Vibecoder UX Protocol section |
@@ -652,3 +1279,51 @@ Steps 1-2 are data + small code changes. Step 3 is the installer rework. Step 4 
 8. Verification results shown in same dashboard pane
 9. Everything degrades gracefully without gum/tmux (plain text fallback)
 10. Returning users get "what do you want?" flow, not onboarding again
+
+---
+
+## Additional Locked Decisions
+
+### Test plan
+Written checklist doc (`docs/superpowers/tests/vibecoder-ux.md`) with exact commands + expected output, same style as v2 punchlist test plan. Written AFTER implementation, executed on Hetzner. Not automated tests — repeatable manual checklist.
+
+### Install privileges
+`secforge install` requires root. If not root, error with hint:
+```
+Error: secforge install requires root.
+Run: sudo secforge install nuclei nmap testssl
+```
+Never auto-sudo (no surprise password prompts, works in scripts/CI). Consistent with existing `sf_need_root` pattern.
+
+### Final design decisions (locked)
+
+**Profiles:**
+- Self-contained — no inheritance/extends. Each profile explicitly lists all its tools, tags, boosts. Adding new profiles later doesn't affect existing configs. ~20 lines per profile is fine.
+- Malformed/missing `profiles.json` → warn, fall back to no-profile behavior (run all tools).
+- `common_endpoints` is recon-only — probe results are raw data for AI, not findings. No Python changes.
+- `priority_boosts` and `fix_hints` are AI-consumed data, not code-enforced multipliers. No Python changes.
+
+**Quick vs full tool surface:**
+- `secforge-builtin` (web checks: .env, .git, headers, cookies) runs in BOTH quick and full scans. It's zero-dep, ~5 seconds, Tier 1, and catches critical exposures. Added to `scan-quick.sh` (gated by `sf_should_run_tool`). Currently only in `scan-all.sh`.
+- Adding new profiles in updates is safe — they're just new JSON entries, existing configs unaffected.
+
+**Estimator display:**
+- First scan (no history): `~8 min (rough estimate — first scan for this target)`
+- With history (median of 5): `~7m 23s (based on previous scans)`
+- Always show tool count: `12 tools, ~8 min`
+
+**Onboarding:**
+- User declines gum/tmux install → save preference to config, never ask again.
+- Multiple domains: `secforge init --domain example.com --domain staging.example.com` or comma-separated. All added to `.authorized_targets`.
+
+**Dashboard:**
+- Color scheme: gum defaults + SecForge yellow header. No custom theme system.
+- Narrow terminal: compact mode (shorter lines, abbreviate tool names). No crash.
+- Parallel scans: not supported. Second scan errors: `"Error: scan already running. Wait for current scan or cancel with Ctrl+C."`
+- Per-session status files (already locked).
+
+**INSTALLED_TOOLS:**
+- Always stores canonical IDs from `tools.json` (not freeform/aliases).
+- `secforge install` writes canonical IDs after successful installs.
+- Legacy/unknown entries from old configs kept in file but shown as "unknown" in `secforge install --list`.
+- Aliases (emaildns → check-email-dns) only accepted at input time, normalized before storage.
