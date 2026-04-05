@@ -536,6 +536,162 @@ with open(cfg, "w", encoding="utf-8") as f:
 PY
 }
 
+# --- Profile-based tool gating ---
+# Reads SECFORGE_TOOLS_PLANNED (CSV, set by preflight).
+# If empty/unset, all tools run (legacy behavior).
+sf_should_run_tool() {
+  local tool_id="$1"
+  local planned="${SECFORGE_TOOLS_PLANNED:-}"
+  [[ -z "${planned}" ]] && return 0  # No profile → run everything
+  local IFS=','
+  for t in ${planned}; do
+    [[ "${t}" == "${tool_id}" ]] && return 0
+  done
+  return 1
+}
+
+# --- Dashboard status events ---
+# Writes JSON line to dashboard status file. Silent no-op if unset.
+sf_emit_dashboard_event() {
+  local json_line="$1"
+  local status_file="${SECFORGE_DASHBOARD_STATUS:-}"
+  [[ -n "${status_file}" ]] && printf '%s\n' "${json_line}" >> "${status_file}" 2>/dev/null || true
+}
+
+# --- Delay helper (used by builtin web checks and scan scripts) ---
+sf_sleep_ms() {
+  local ms="$1"
+  # Validate numeric to prevent injection; fall back to 200ms.
+  if ! [[ "${ms}" =~ ^[0-9]+$ ]]; then
+    ms=200
+  fi
+  sleep "$(awk -v ms="${ms}" 'BEGIN{printf "%.3f", ms/1000}')"
+}
+
+# --- Built-in web checks (zero-dep, ~5s, catches .env/.git/headers/cookies) ---
+sf_builtin_web_checks() {
+  local base_url="$1"
+  local out_json="$2"
+  local delay_ms="$3"
+
+  local git_head_code env_code trace_code put_code delete_code
+  git_head_code="$(curl -sS -o /dev/null --max-time 10 -w "%{http_code}" "${base_url}/.git/HEAD" 2>/dev/null || echo "000")"
+  sf_sleep_ms "${delay_ms}"
+  env_code="$(curl -sS -o /dev/null --max-time 10 -w "%{http_code}" "${base_url}/.env" 2>/dev/null || echo "000")"
+  sf_sleep_ms "${delay_ms}"
+
+  trace_code="$(curl -sS -o /dev/null --max-time 10 -w "%{http_code}" -X TRACE "${base_url}/" 2>/dev/null || echo "000")"
+  sf_sleep_ms "${delay_ms}"
+  put_code="$(curl -sS -o /dev/null --max-time 10 -w "%{http_code}" -X PUT "${base_url}/" 2>/dev/null || echo "000")"
+  sf_sleep_ms "${delay_ms}"
+  delete_code="$(curl -sS -o /dev/null --max-time 10 -w "%{http_code}" -X DELETE "${base_url}/" 2>/dev/null || echo "000")"
+
+  # Cookie flags (best-effort)
+  local headers cookies_total cookies_missing_secure cookies_missing_httponly cookies_missing_samesite
+  headers="$({ curl -sS -I --max-time 10 "${base_url}/" 2>/dev/null || true; } | tr -d '\r')"
+  cookies_total="$(grep -ic '^set-cookie:' <<<"${headers}" || true)"
+  cookies_missing_secure="$(grep -i '^set-cookie:' <<<"${headers}" | grep -vic ';\s*secure' || true)"
+  cookies_missing_httponly="$(grep -i '^set-cookie:' <<<"${headers}" | grep -vic ';\s*httponly' || true)"
+  cookies_missing_samesite="$(grep -i '^set-cookie:' <<<"${headers}" | grep -vic ';\s*samesite=' || true)"
+
+  # Clickjacking protection (best-effort)
+  local xfo_present csp_frame_ancestors_present clickjacking_protected
+  xfo_present="false"
+  csp_frame_ancestors_present="false"
+  clickjacking_protected="false"
+  if grep -qi '^x-frame-options:' <<<"${headers}"; then
+    xfo_present="true"
+    clickjacking_protected="true"
+  fi
+  if grep -qi '^content-security-policy:.*frame-ancestors' <<<"${headers}"; then
+    csp_frame_ancestors_present="true"
+    clickjacking_protected="true"
+  fi
+
+  # Basic SSRF probes (lightweight, non-destructive). We only record status/latency.
+  local probe ssrf_url_code ssrf_url_time ssrf_dest_code ssrf_dest_time ssrf_next_code ssrf_next_time
+  probe="$(curl -sS -o /dev/null --max-time 10 -w "%{http_code} %{time_total}" "${base_url%/}/?url=http://127.0.0.1:9" 2>/dev/null || echo "000 0")"
+  read -r ssrf_url_code ssrf_url_time <<<"${probe}" || true
+  sf_sleep_ms "${delay_ms}"
+  probe="$(curl -sS -o /dev/null --max-time 10 -w "%{http_code} %{time_total}" "${base_url%/}/?dest=http://127.0.0.1:9" 2>/dev/null || echo "000 0")"
+  read -r ssrf_dest_code ssrf_dest_time <<<"${probe}" || true
+  sf_sleep_ms "${delay_ms}"
+  probe="$(curl -sS -o /dev/null --max-time 10 -w "%{http_code} %{time_total}" "${base_url%/}/?next=http://127.0.0.1:9" 2>/dev/null || echo "000 0")"
+  read -r ssrf_next_code ssrf_next_time <<<"${probe}" || true
+
+  SF_GIT_HEAD_CODE="${git_head_code}" \
+  SF_ENV_CODE="${env_code}" \
+  SF_TRACE_CODE="${trace_code}" \
+  SF_PUT_CODE="${put_code}" \
+  SF_DELETE_CODE="${delete_code}" \
+  SF_COOKIES_TOTAL="${cookies_total}" \
+  SF_COOKIES_NO_SECURE="${cookies_missing_secure}" \
+  SF_COOKIES_NO_HTTPONLY="${cookies_missing_httponly}" \
+  SF_COOKIES_NO_SAMESITE="${cookies_missing_samesite}" \
+  SF_XFO_PRESENT="${xfo_present}" \
+  SF_CSP_FRAME_ANCESTORS_PRESENT="${csp_frame_ancestors_present}" \
+  SF_CLICKJACKING_PROTECTED="${clickjacking_protected}" \
+  SF_SSRF_URL_CODE="${ssrf_url_code:-000}" \
+  SF_SSRF_URL_TIME="${ssrf_url_time:-0}" \
+  SF_SSRF_DEST_CODE="${ssrf_dest_code:-000}" \
+  SF_SSRF_DEST_TIME="${ssrf_dest_time:-0}" \
+  SF_SSRF_NEXT_CODE="${ssrf_next_code:-000}" \
+  SF_SSRF_NEXT_TIME="${ssrf_next_time:-0}" \
+  SF_OUT_JSON="${out_json}" \
+  python3 - <<'PY'
+import json
+import os
+
+
+def int_or_zero(s):
+  try:
+    return int(s)
+  except Exception:
+    return 0
+
+
+data = {
+  "git_head_http_code": os.environ.get("SF_GIT_HEAD_CODE", "000"),
+  "env_http_code": os.environ.get("SF_ENV_CODE", "000"),
+  "http_methods": {
+    "trace_http_code": os.environ.get("SF_TRACE_CODE", "000"),
+    "put_http_code": os.environ.get("SF_PUT_CODE", "000"),
+    "delete_http_code": os.environ.get("SF_DELETE_CODE", "000"),
+  },
+  "cookies": {
+    "set_cookie_headers": int_or_zero(os.environ.get("SF_COOKIES_TOTAL", "0")),
+    "missing_secure": int_or_zero(os.environ.get("SF_COOKIES_NO_SECURE", "0")),
+    "missing_httponly": int_or_zero(os.environ.get("SF_COOKIES_NO_HTTPONLY", "0")),
+    "missing_samesite": int_or_zero(os.environ.get("SF_COOKIES_NO_SAMESITE", "0")),
+  },
+  "clickjacking": {
+    "protected": os.environ.get("SF_CLICKJACKING_PROTECTED", "false") == "true",
+    "x_frame_options_present": os.environ.get("SF_XFO_PRESENT", "false") == "true",
+    "csp_frame_ancestors_present": os.environ.get("SF_CSP_FRAME_ANCESTORS_PRESENT", "false") == "true",
+  },
+  "ssrf_probes": {
+    "url_param": {
+      "http_code": os.environ.get("SF_SSRF_URL_CODE", "000"),
+      "latency_seconds": os.environ.get("SF_SSRF_URL_TIME", "0"),
+    },
+    "dest_param": {
+      "http_code": os.environ.get("SF_SSRF_DEST_CODE", "000"),
+      "latency_seconds": os.environ.get("SF_SSRF_DEST_TIME", "0"),
+    },
+    "next_param": {
+      "http_code": os.environ.get("SF_SSRF_NEXT_CODE", "000"),
+      "latency_seconds": os.environ.get("SF_SSRF_NEXT_TIME", "0"),
+    },
+  },
+}
+
+out_path = os.environ.get("SF_OUT_JSON", "")
+if out_path:
+  with open(out_path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2, sort_keys=True)
+PY
+}
+
 sf_cfg_add_list_item() {
   local cfg_file="$1"
   local key="$2"
