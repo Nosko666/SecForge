@@ -226,7 +226,7 @@ def parse_interactsh(fpath: Path, context: Dict[str, Any]) -> List[Dict[str, Any
 
     if not callbacks:
         return [make_finding(
-            issue_key="discovery.waf_detected",  # reuse info key
+            issue_key="discovery.oob_no_callbacks",
             title="Interactsh: no OOB callbacks received",
             severity="info",
             tool="interactsh",

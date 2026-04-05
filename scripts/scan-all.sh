@@ -33,6 +33,13 @@ sf_kill_pid() {
 sf_cleanup_bg() {
   set +e
 
+  # Write partial manifest on early exit (Ctrl+C, crash, etc.)
+  if [[ -n "${SECFORGE_SESSION_DIR:-}" ]] && [[ ! -f "${SECFORGE_SESSION_DIR:-}/scan_manifest.json" ]]; then
+    SF_MANIFEST_TOOLS_RUN="$(IFS=,; echo "${_SF_TOOLS_RUN[*]:-}")" \
+    SF_MANIFEST_TOOLS_FAILED="$(IFS=,; echo "${_SF_TOOLS_FAILED[*]:-}")" \
+    sf_write_manifest "${SECFORGE_SESSION_DIR}" "all" 2>/dev/null || true
+  fi
+
   if [[ "${ZAP_STARTED}" == "1" && -n "${ZAP_API_BASE}" ]] && command -v curl >/dev/null 2>&1; then
     curl -fsS "${ZAP_API_BASE}/JSON/core/action/shutdown/" >/dev/null 2>&1 || true
   fi
@@ -56,6 +63,8 @@ sf_tool() {
   return 1
 }
 
+_SF_LAST_EXIT_CODE=0
+
 sf_run() {
   local timeout_s="$1"
   local stdout_path="$2"
@@ -65,11 +74,64 @@ sf_run() {
   mkdir -p "$(dirname -- "${stdout_path}")"
 
   sf_log "Running: $*"
+  _SF_LAST_EXIT_CODE=0
   if command -v timeout >/dev/null 2>&1; then
-    timeout --preserve-status --kill-after=10s "${timeout_s}" "$@" >"${stdout_path}" 2>"${err_path}" || true
+    timeout --preserve-status --kill-after=10s "${timeout_s}" "$@" >"${stdout_path}" 2>"${err_path}" || _SF_LAST_EXIT_CODE=$?
   else
-    "$@" >"${stdout_path}" 2>"${err_path}" || true
+    "$@" >"${stdout_path}" 2>"${err_path}" || _SF_LAST_EXIT_CODE=$?
   fi
+}
+
+# Manifest tracking arrays
+_SF_TOOLS_RUN=()
+_SF_TOOLS_FAILED=()
+
+sf_track_run() {
+  # Usage: sf_track_run <tool_name> <check_file> <sf_run_args...>
+  # A tool is marked "failed" if: exit code >= 124 (timeout/killed), output missing,
+  # or empty output with crash indicators in stderr. Empty output alone = success.
+  local tool_name="$1"
+  local check_file="$2"
+  shift 2
+  local _stdout_path="$2"
+  _SF_TOOLS_RUN+=("${tool_name}")
+  sf_run "$@"
+  if [[ "${_SF_LAST_EXIT_CODE}" -ge 124 ]]; then
+    _SF_TOOLS_FAILED+=("${tool_name}")
+  elif [[ ! -e "${check_file}" ]]; then
+    _SF_TOOLS_FAILED+=("${tool_name}")
+  elif [[ ! -s "${check_file}" ]]; then
+    local _err_log="${_stdout_path}.err"
+    if [[ -s "${_err_log}" ]] && grep -qiE '(error|exception|traceback|killed|timeout|segfault|panic|fatal)' "${_err_log}" 2>/dev/null; then
+      _SF_TOOLS_FAILED+=("${tool_name}")
+    fi
+  fi
+}
+
+sf_write_manifest() {
+  local session_dir="$1"
+  local profile="${2:-all}"
+  local scan_date
+  scan_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  python3 - "${session_dir}" "${profile}" "${scan_date}" <<'PYEOF'
+import json, sys, os
+session_dir = sys.argv[1]
+profile = sys.argv[2]
+scan_date = sys.argv[3]
+tools_run = os.environ.get("SF_MANIFEST_TOOLS_RUN", "").split(",")
+tools_failed = os.environ.get("SF_MANIFEST_TOOLS_FAILED", "").split(",")
+tools_run = [t for t in tools_run if t]
+tools_failed = [t for t in tools_failed if t]
+manifest = {
+    "tools_run": sorted(set(tools_run)),
+    "tools_failed": sorted(set(tools_failed)),
+    "scan_date": scan_date,
+    "profile": profile,
+}
+out = os.path.join(session_dir, "scan_manifest.json")
+with open(out, "w") as f:
+    json.dump(manifest, f, indent=2, sort_keys=False)
+PYEOF
 }
 
 sf_sleep_ms() {
@@ -399,26 +461,27 @@ main() {
       sf_log "Starting interactsh-client (OOB callbacks)..."
       "$(sf_tool interactsh-client)" -json -o "${SECFORGE_SESSION_DIR}/api/interactsh.json" >"${SECFORGE_SESSION_DIR}/api/interactsh.log" 2>"${SECFORGE_SESSION_DIR}/api/interactsh.log.err" &
       INTERACTSH_PID=$!
+      _SF_TOOLS_RUN+=("interactsh")
     fi
 
     sf_circuit_breaker_check "${SECFORGE_TARGET_URL}" "${threshold}" "${cooldown}"
 
     if sf_tool wafw00f >/dev/null 2>&1; then
-      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/wafw00f.log" "$(sf_tool wafw00f)" "${SECFORGE_TARGET_URL}" -f json -o "${SECFORGE_SESSION_DIR}/webapp/wafw00f.json"
+      sf_track_run wafw00f "${SECFORGE_SESSION_DIR}/webapp/wafw00f.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/wafw00f.log" "$(sf_tool wafw00f)" "${SECFORGE_TARGET_URL}" -f json -o "${SECFORGE_SESSION_DIR}/webapp/wafw00f.json"
     fi
 
     if sf_tool whatweb >/dev/null 2>&1; then
-      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/whatweb.log" "$(sf_tool whatweb)" "${SECFORGE_TARGET_URL}" "--log-json=${SECFORGE_SESSION_DIR}/webapp/whatweb.json"
+      sf_track_run whatweb "${SECFORGE_SESSION_DIR}/webapp/whatweb.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/whatweb.log" "$(sf_tool whatweb)" "${SECFORGE_TARGET_URL}" "--log-json=${SECFORGE_SESSION_DIR}/webapp/whatweb.json"
     fi
 
     if sf_tool corscanner >/dev/null 2>&1; then
-      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/corscanner.log" "$(sf_tool corscanner)" -u "${SECFORGE_TARGET_URL}" -o "${SECFORGE_SESSION_DIR}/webapp/corscanner.json"
+      sf_track_run corscanner "${SECFORGE_SESSION_DIR}/webapp/corscanner.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/corscanner.log" "$(sf_tool corscanner)" -u "${SECFORGE_TARGET_URL}" -o "${SECFORGE_SESSION_DIR}/webapp/corscanner.json"
     fi
 
     if sf_tool nuclei >/dev/null 2>&1; then
       local _nuclei_tpl="${SECFORGE_ROOT}/tools/nuclei-templates"
       if [[ -d "${_nuclei_tpl}" ]]; then
-        sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/nuclei.log" "$(sf_tool nuclei)" -duc -u "${SECFORGE_TARGET_URL}" -t "${_nuclei_tpl}" -json-export "${SECFORGE_SESSION_DIR}/webapp/nuclei.json"
+        sf_track_run nuclei "${SECFORGE_SESSION_DIR}/webapp/nuclei.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/nuclei.log" "$(sf_tool nuclei)" -duc -u "${SECFORGE_TARGET_URL}" -t "${_nuclei_tpl}" -json-export "${SECFORGE_SESSION_DIR}/webapp/nuclei.json"
       else
         sf_warn "Nuclei templates not found at ${_nuclei_tpl}. Skipping nuclei (run installer to fetch templates)."
       fi
@@ -427,18 +490,21 @@ main() {
     sf_circuit_breaker_check "${SECFORGE_TARGET_URL}" "${threshold}" "${cooldown}"
 
     if sf_tool ffuf >/dev/null 2>&1 && [[ -r "${SECFORGE_ROOT}/wordlists/directories.txt" ]]; then
-      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/ffuf.log" "$(sf_tool ffuf)" -u "${SECFORGE_TARGET_URL%/}/FUZZ" -w "${SECFORGE_ROOT}/wordlists/directories.txt" -o "${SECFORGE_SESSION_DIR}/webapp/ffuf.json" -of json
+      sf_track_run ffuf "${SECFORGE_SESSION_DIR}/webapp/ffuf.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/ffuf.log" "$(sf_tool ffuf)" -u "${SECFORGE_TARGET_URL%/}/FUZZ" -w "${SECFORGE_ROOT}/wordlists/directories.txt" -o "${SECFORGE_SESSION_DIR}/webapp/ffuf.json" -of json
     fi
 
     if sf_tool nikto >/dev/null 2>&1; then
-      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/nikto.log" "$(sf_tool nikto)" -h "${SECFORGE_TARGET_URL}" -Format json -output "${SECFORGE_SESSION_DIR}/webapp/nikto.json"
+      sf_track_run nikto "${SECFORGE_SESSION_DIR}/webapp/nikto.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/nikto.log" "$(sf_tool nikto)" -h "${SECFORGE_TARGET_URL}" -Format json -output "${SECFORGE_SESSION_DIR}/webapp/nikto.json"
     fi
 
     if sf_tool observatory >/dev/null 2>&1; then
-      # CLI syntax varies; try common forms.
+      _SF_TOOLS_RUN+=("observatory")
       sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/ssl/observatory.json" "$(sf_tool observatory)" --format json "${SECFORGE_TARGET_URL}" || true
       if [[ ! -s "${SECFORGE_SESSION_DIR}/ssl/observatory.json" ]]; then
         sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/ssl/observatory.json" "$(sf_tool observatory)" scan --format json "${SECFORGE_TARGET_URL}" || true
+      fi
+      if [[ ! -s "${SECFORGE_SESSION_DIR}/ssl/observatory.json" ]]; then
+        _SF_TOOLS_FAILED+=("observatory")
       fi
     fi
 
@@ -447,7 +513,7 @@ main() {
       if [[ -n "${SECFORGE_TARGET_PORT}" ]]; then
         ssl_target="${ssl_target}:${SECFORGE_TARGET_PORT}"
       fi
-      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/ssl/testssl.log" "$(sf_tool testssl.sh)" --jsonfile "${SECFORGE_SESSION_DIR}/ssl/testssl.json" "${ssl_target}"
+      sf_track_run testssl "${SECFORGE_SESSION_DIR}/ssl/testssl.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/ssl/testssl.log" "$(sf_tool testssl.sh)" --jsonfile "${SECFORGE_SESSION_DIR}/ssl/testssl.json" "${ssl_target}"
     fi
 
     if sf_tool sslscan >/dev/null 2>&1; then
@@ -455,24 +521,28 @@ main() {
       if [[ -n "${SECFORGE_TARGET_PORT}" ]]; then
         ssl_target="${ssl_target}:${SECFORGE_TARGET_PORT}"
       fi
-      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/ssl/sslscan.log" "$(sf_tool sslscan)" --xml="${SECFORGE_SESSION_DIR}/ssl/sslscan.xml" "${ssl_target}"
+      sf_track_run sslscan "${SECFORGE_SESSION_DIR}/ssl/sslscan.xml" "${timeout_web}" "${SECFORGE_SESSION_DIR}/ssl/sslscan.log" "$(sf_tool sslscan)" --xml="${SECFORGE_SESSION_DIR}/ssl/sslscan.xml" "${ssl_target}"
     fi
 
     # Built-in curl checks (zero-dependency, high value).
+    _SF_TOOLS_RUN+=("builtin")
     sf_builtin_web_checks "${SECFORGE_TARGET_URL%/}" "${SECFORGE_SESSION_DIR}/webapp/builtin.json" "${delay_ms}"
+    if [[ ! -s "${SECFORGE_SESSION_DIR}/webapp/builtin.json" ]]; then
+      _SF_TOOLS_FAILED+=("builtin")
+    fi
 
     if [[ -r "${SCRIPT_DIR}/check-email-dns.sh" ]]; then
       chmod +x "${SCRIPT_DIR}/check-email-dns.sh" 2>/dev/null || true
-      sf_run 60 "${SECFORGE_SESSION_DIR}/emaildns/emaildns.json" "${SCRIPT_DIR}/check-email-dns.sh" "${SECFORGE_TARGET_HOST}"
+      sf_track_run emaildns "${SECFORGE_SESSION_DIR}/emaildns/emaildns.json" 60 "${SECFORGE_SESSION_DIR}/emaildns/emaildns.json" "${SCRIPT_DIR}/check-email-dns.sh" "${SECFORGE_TARGET_HOST}"
     fi
 
     if sf_tool subfinder >/dev/null 2>&1; then
-      sf_run 120 "${SECFORGE_SESSION_DIR}/emaildns/subfinder.jsonl" "$(sf_tool subfinder)" -d "${SECFORGE_TARGET_HOST}" -silent -json
+      sf_track_run subfinder "${SECFORGE_SESSION_DIR}/emaildns/subfinder.jsonl" 120 "${SECFORGE_SESSION_DIR}/emaildns/subfinder.jsonl" "$(sf_tool subfinder)" -d "${SECFORGE_TARGET_HOST}" -silent -json
       # Probe discovered hosts (limit to first 200).
       if sf_tool httpx >/dev/null 2>&1; then
         jq -r '.host // empty' "${SECFORGE_SESSION_DIR}/emaildns/subfinder.jsonl" 2>/dev/null | grep -E '^[A-Za-z0-9._-]+$' | sort -u | head -n 200 >"${SECFORGE_SESSION_DIR}/emaildns/subdomains.txt" || true
         if [[ -s "${SECFORGE_SESSION_DIR}/emaildns/subdomains.txt" ]]; then
-          sf_run 300 "${SECFORGE_SESSION_DIR}/emaildns/httpx.jsonl" "$(sf_tool httpx)" -l "${SECFORGE_SESSION_DIR}/emaildns/subdomains.txt" -silent -json
+          sf_track_run httpx "${SECFORGE_SESSION_DIR}/emaildns/httpx.jsonl" 300 "${SECFORGE_SESSION_DIR}/emaildns/httpx.jsonl" "$(sf_tool httpx)" -l "${SECFORGE_SESSION_DIR}/emaildns/subdomains.txt" -silent -json
         fi
       fi
     fi
@@ -488,65 +558,71 @@ main() {
         nmap_timing="-T3"
       fi
 
-      sf_run "${timeout_portscan}" "${SECFORGE_SESSION_DIR}/network/nmap.log" "$(sf_tool nmap)" "${nmap_timing}" -sV -sC --top-ports "${nmap_top}" -oX "${SECFORGE_SESSION_DIR}/network/nmap.xml" "${SECFORGE_TARGET_HOST}"
+      sf_track_run nmap "${SECFORGE_SESSION_DIR}/network/nmap.xml" "${timeout_portscan}" "${SECFORGE_SESSION_DIR}/network/nmap.log" "$(sf_tool nmap)" "${nmap_timing}" -sV -sC --top-ports "${nmap_top}" -oX "${SECFORGE_SESSION_DIR}/network/nmap.xml" "${SECFORGE_TARGET_HOST}"
     fi
 
     if sf_tool ssh-audit >/dev/null 2>&1; then
-      sf_run 60 "${SECFORGE_SESSION_DIR}/hardening/ssh-audit.json" "$(sf_tool ssh-audit)" --json "${SECFORGE_TARGET_HOST}"
+      sf_track_run ssh-audit "${SECFORGE_SESSION_DIR}/hardening/ssh-audit.json" 60 "${SECFORGE_SESSION_DIR}/hardening/ssh-audit.json" "$(sf_tool ssh-audit)" --json "${SECFORGE_TARGET_HOST}"
     fi
 
     if sf_tool masscan >/dev/null 2>&1; then
       local sudo_policy
       sudo_policy="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "ALLOW_SUDO_TOOLS" || true)"
       sudo_policy="${sudo_policy:-ask}"
+      _SF_TOOLS_RUN+=("masscan")
       if [[ "${EUID}" -eq 0 ]]; then
         sf_run "${timeout_portscan}" "${SECFORGE_SESSION_DIR}/network/masscan.log" "$(sf_tool masscan)" "${SECFORGE_TARGET_HOST}" -p0-65535 --rate=1000 -oJ "${SECFORGE_SESSION_DIR}/network/masscan.json"
       elif [[ "${sudo_policy}" == "never" ]]; then
         sf_warn "Skipping masscan (requires root; ALLOW_SUDO_TOOLS=never)."
+        _SF_TOOLS_FAILED+=("masscan")
       else
         if sf_ask_tty_yes "Masscan needs sudo (raw sockets). Type YES to run it now:" "YES"; then
           sf_run "${timeout_portscan}" "${SECFORGE_SESSION_DIR}/network/masscan.log" sudo "$(sf_tool masscan)" "${SECFORGE_TARGET_HOST}" -p0-65535 --rate=1000 -oJ "${SECFORGE_SESSION_DIR}/network/masscan.json"
         else
           sf_log "Skipping masscan."
+          _SF_TOOLS_FAILED+=("masscan")
         fi
+      fi
+      if [[ ! -s "${SECFORGE_SESSION_DIR}/network/masscan.json" ]]; then
+        _SF_TOOLS_FAILED+=("masscan")
       fi
     fi
   fi
 
   # Local system audit (Tier 1, read-only).
   if sf_tool lynis >/dev/null 2>&1; then
-    sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/lynis.stdout" "$(sf_tool lynis)" audit system --no-colors --logfile "${SECFORGE_SESSION_DIR}/hardening/lynis.log" --report-file "${SECFORGE_SESSION_DIR}/hardening/lynis.dat"
+    sf_track_run lynis "${SECFORGE_SESSION_DIR}/hardening/lynis.dat" "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/lynis.stdout" "$(sf_tool lynis)" audit system --no-colors --logfile "${SECFORGE_SESSION_DIR}/hardening/lynis.log" --report-file "${SECFORGE_SESSION_DIR}/hardening/lynis.dat"
   fi
 
   if sf_tool systemd-analyze >/dev/null 2>&1; then
-    sf_run 120 "${SECFORGE_SESSION_DIR}/hardening/systemd-security.txt" "$(sf_tool systemd-analyze)" security
+    sf_track_run systemd-analyze "${SECFORGE_SESSION_DIR}/hardening/systemd-security.txt" 120 "${SECFORGE_SESSION_DIR}/hardening/systemd-security.txt" "$(sf_tool systemd-analyze)" security
   fi
 
   if sf_tool clamscan >/dev/null 2>&1; then
-    # Scoped scan by default; full / scan is opt-in.
-    sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/clamav.stdout" "$(sf_tool clamscan)" -r /home /var/www /tmp --log="${SECFORGE_SESSION_DIR}/hardening/clamav.log" --exclude-dir="^/proc" --exclude-dir="^/sys" --exclude-dir="^/opt/secforge" || true
+    sf_track_run clamscan "${SECFORGE_SESSION_DIR}/hardening/clamav.log" "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/clamav.stdout" "$(sf_tool clamscan)" -r /home /var/www /tmp --log="${SECFORGE_SESSION_DIR}/hardening/clamav.log" --exclude-dir="^/proc" --exclude-dir="^/sys" --exclude-dir="^/opt/secforge" || true
   fi
 
   if sf_tool rkhunter >/dev/null 2>&1; then
-    sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/rkhunter.stdout" "$(sf_tool rkhunter)" --check --skip-keypress --logfile "${SECFORGE_SESSION_DIR}/hardening/rkhunter.log"
+    sf_track_run rkhunter "${SECFORGE_SESSION_DIR}/hardening/rkhunter.log" "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/rkhunter.stdout" "$(sf_tool rkhunter)" --check --skip-keypress --logfile "${SECFORGE_SESSION_DIR}/hardening/rkhunter.log"
   fi
 
   if sf_tool aide >/dev/null 2>&1; then
-    sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/aide.log" "$(sf_tool aide)" --check
+    sf_track_run aide "${SECFORGE_SESSION_DIR}/hardening/aide.log" "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/aide.log" "$(sf_tool aide)" --check
   fi
 
   if sf_tool aureport >/dev/null 2>&1; then
-    sf_run 60 "${SECFORGE_SESSION_DIR}/hardening/audit-summary.log" "$(sf_tool aureport)" --summary
+    sf_track_run aureport "${SECFORGE_SESSION_DIR}/hardening/audit-summary.log" 60 "${SECFORGE_SESSION_DIR}/hardening/audit-summary.log" "$(sf_tool aureport)" --summary
   fi
 
   if sf_tool debsums >/dev/null 2>&1; then
-    sf_run 600 "${SECFORGE_SESSION_DIR}/hardening/debsums.log" "$(sf_tool debsums)" -s
+    sf_track_run debsums "${SECFORGE_SESSION_DIR}/hardening/debsums.log" 600 "${SECFORGE_SESSION_DIR}/hardening/debsums.log" "$(sf_tool debsums)" -s
   fi
 
   if sf_tool trivy >/dev/null 2>&1; then
     local sudo_policy
     sudo_policy="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "ALLOW_SUDO_TOOLS" || true)"
     sudo_policy="${sudo_policy:-ask}"
+    _SF_TOOLS_RUN+=("trivy")
 
     if [[ "${EUID}" -eq 0 ]]; then
       sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.log" "$(sf_tool trivy)" rootfs --format json --output "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.json" /
@@ -561,16 +637,20 @@ main() {
     else
       sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.log" "$(sf_tool trivy)" rootfs --format json --output "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.json" /
     fi
+    if [[ ! -s "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.json" ]]; then
+      _SF_TOOLS_FAILED+=("trivy")
+    fi
   fi
 
   if [[ -r "${SCRIPT_DIR}/check-mysql.sh" ]]; then
     chmod +x "${SCRIPT_DIR}/check-mysql.sh" 2>/dev/null || true
-    sf_run 60 "${SECFORGE_SESSION_DIR}/database/mysql.json" "${SCRIPT_DIR}/check-mysql.sh"
+    sf_track_run mysql "${SECFORGE_SESSION_DIR}/database/mysql.json" 60 "${SECFORGE_SESSION_DIR}/database/mysql.json" "${SCRIPT_DIR}/check-mysql.sh"
   fi
 
   # Optional codebase scans.
   if [[ -n "${SECFORGE_CODE_PATH}" ]]; then
     if sf_tool trufflehog >/dev/null 2>&1; then
+      _SF_TOOLS_RUN+=("trufflehog")
       local _th_raw
       _th_raw="$(mktemp /tmp/secforge-trufflehog-raw.XXXXXX)"
       chmod 0600 "${_th_raw}"
@@ -578,16 +658,19 @@ main() {
       if [[ -s "${_th_raw}" ]] && [[ -r "${SCRIPT_DIR}/sanitize-trufflehog.py" ]]; then
         python3 "${SCRIPT_DIR}/sanitize-trufflehog.py" "${_th_raw}" "${SECFORGE_SESSION_DIR}/secrets/trufflehog.json" 2>/dev/null || sf_warn "TruffleHog sanitization failed"
       fi
+      if [[ ! -s "${SECFORGE_SESSION_DIR}/secrets/trufflehog.json" ]]; then
+        _SF_TOOLS_FAILED+=("trufflehog")
+      fi
       rm -f "${_th_raw}" "${_th_raw}.err" 2>/dev/null || true
     fi
     if sf_tool gitleaks >/dev/null 2>&1; then
-      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/secrets/gitleaks.log" "$(sf_tool gitleaks)" detect --source "${SECFORGE_CODE_PATH}" --redact --report-path "${SECFORGE_SESSION_DIR}/secrets/gitleaks.json" --report-format json
+      sf_track_run gitleaks "${SECFORGE_SESSION_DIR}/secrets/gitleaks.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/secrets/gitleaks.log" "$(sf_tool gitleaks)" detect --source "${SECFORGE_CODE_PATH}" --redact --report-path "${SECFORGE_SESSION_DIR}/secrets/gitleaks.json" --report-format json
     fi
     if sf_tool osv-scanner >/dev/null 2>&1; then
-      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/dependencies/osv.json" "$(sf_tool osv-scanner)" --json "${SECFORGE_CODE_PATH}"
+      sf_track_run osv-scanner "${SECFORGE_SESSION_DIR}/dependencies/osv.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/dependencies/osv.json" "$(sf_tool osv-scanner)" --json "${SECFORGE_CODE_PATH}"
     fi
     if sf_tool pip-audit >/dev/null 2>&1; then
-      sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/dependencies/pip-audit.json" "$(sf_tool pip-audit)" --format json
+      sf_track_run pip-audit "${SECFORGE_SESSION_DIR}/dependencies/pip-audit.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/dependencies/pip-audit.json" "$(sf_tool pip-audit)" --format json
     fi
   fi
 
@@ -598,28 +681,32 @@ main() {
     if sf_tier2_opt_in; then
       sf_circuit_breaker_check "${SECFORGE_TARGET_URL}" "${threshold}" "${cooldown}"
 
+      _SF_TOOLS_RUN+=("zap")
       sf_zap_active_scan "${SECFORGE_TARGET_URL}" "${SECFORGE_SESSION_DIR}/webapp/zap.json" "${SECFORGE_SESSION_DIR}/webapp/zap.log" "${timeout_zap}"
+      if [[ ! -s "${SECFORGE_SESSION_DIR}/webapp/zap.json" ]]; then
+        _SF_TOOLS_FAILED+=("zap")
+      fi
 
       if sf_tool sqlmap >/dev/null 2>&1; then
         mkdir -p "${SECFORGE_SESSION_DIR}/webapp/sqlmap"
-        sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/sqlmap/sqlmap.log" "$(sf_tool sqlmap)" -u "${SECFORGE_TARGET_URL}" --batch --forms --crawl=3 --output-dir="${SECFORGE_SESSION_DIR}/webapp/sqlmap"
+        sf_track_run sqlmap "${SECFORGE_SESSION_DIR}/webapp/sqlmap/sqlmap.log" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/sqlmap/sqlmap.log" "$(sf_tool sqlmap)" -u "${SECFORGE_TARGET_URL}" --batch --forms --crawl=3 --output-dir="${SECFORGE_SESSION_DIR}/webapp/sqlmap"
       fi
 
       if sf_tool dalfox >/dev/null 2>&1; then
-        sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/dalfox.log" "$(sf_tool dalfox)" url "${SECFORGE_TARGET_URL}" -o "${SECFORGE_SESSION_DIR}/webapp/dalfox.json" --format json
+        sf_track_run dalfox "${SECFORGE_SESSION_DIR}/webapp/dalfox.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/dalfox.log" "$(sf_tool dalfox)" url "${SECFORGE_TARGET_URL}" -o "${SECFORGE_SESSION_DIR}/webapp/dalfox.json" --format json
       fi
 
       if sf_tool xsstrike >/dev/null 2>&1; then
-        sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/xsstrike.log" "$(sf_tool xsstrike)" -u "${SECFORGE_TARGET_URL}" --crawl || true
+        sf_track_run xsstrike "${SECFORGE_SESSION_DIR}/webapp/xsstrike.log" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/xsstrike.log" "$(sf_tool xsstrike)" -u "${SECFORGE_TARGET_URL}" --crawl || true
       fi
 
       if sf_tool commix >/dev/null 2>&1; then
         mkdir -p "${SECFORGE_SESSION_DIR}/webapp/commix"
-        sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/commix.log" "$(sf_tool commix)" --url="${SECFORGE_TARGET_URL}" --batch --output-dir="${SECFORGE_SESSION_DIR}/webapp/commix"
+        sf_track_run commix "${SECFORGE_SESSION_DIR}/webapp/commix.log" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/commix.log" "$(sf_tool commix)" --url="${SECFORGE_TARGET_URL}" --batch --output-dir="${SECFORGE_SESSION_DIR}/webapp/commix"
       fi
 
       if sf_tool wapiti >/dev/null 2>&1; then
-        sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/wapiti.log" "$(sf_tool wapiti)" -u "${SECFORGE_TARGET_URL}" -f json -o "${SECFORGE_SESSION_DIR}/webapp/wapiti.json"
+        sf_track_run wapiti "${SECFORGE_SESSION_DIR}/webapp/wapiti.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/wapiti.log" "$(sf_tool wapiti)" -u "${SECFORGE_TARGET_URL}" -f json -o "${SECFORGE_SESSION_DIR}/webapp/wapiti.json"
       fi
 
       if sf_ask_tty_yes "Run SSH credential checks (Hydra/NetExec) against ${SECFORGE_TARGET_HOST}? Type YES to continue:" "YES"; then
@@ -633,17 +720,17 @@ main() {
         elif [[ -n "${ssh_user}" || ( -n "${ssh_users_file}" && -r "${ssh_users_file}" ) ]]; then
           if sf_tool hydra >/dev/null 2>&1; then
             if [[ -n "${ssh_user}" ]]; then
-              sf_run 600 "${SECFORGE_SESSION_DIR}/passwords/hydra.txt" "$(sf_tool hydra)" -l "${ssh_user}" -P "${pw_list}" "${SECFORGE_TARGET_HOST}" ssh
+              sf_track_run hydra "${SECFORGE_SESSION_DIR}/passwords/hydra.txt" 600 "${SECFORGE_SESSION_DIR}/passwords/hydra.txt" "$(sf_tool hydra)" -l "${ssh_user}" -P "${pw_list}" "${SECFORGE_TARGET_HOST}" ssh
             else
-              sf_run 600 "${SECFORGE_SESSION_DIR}/passwords/hydra.txt" "$(sf_tool hydra)" -L "${ssh_users_file}" -P "${pw_list}" "${SECFORGE_TARGET_HOST}" ssh
+              sf_track_run hydra "${SECFORGE_SESSION_DIR}/passwords/hydra.txt" 600 "${SECFORGE_SESSION_DIR}/passwords/hydra.txt" "$(sf_tool hydra)" -L "${ssh_users_file}" -P "${pw_list}" "${SECFORGE_TARGET_HOST}" ssh
             fi
           fi
 
           if sf_tool nxc >/dev/null 2>&1; then
             if [[ -n "${ssh_user}" ]]; then
-              sf_run 600 "${SECFORGE_SESSION_DIR}/passwords/netexec.txt" "$(sf_tool nxc)" ssh "${SECFORGE_TARGET_HOST}" -u "${ssh_user}" -p "${pw_list}"
+              sf_track_run netexec "${SECFORGE_SESSION_DIR}/passwords/netexec.txt" 600 "${SECFORGE_SESSION_DIR}/passwords/netexec.txt" "$(sf_tool nxc)" ssh "${SECFORGE_TARGET_HOST}" -u "${ssh_user}" -p "${pw_list}"
             else
-              sf_run 600 "${SECFORGE_SESSION_DIR}/passwords/netexec.txt" "$(sf_tool nxc)" ssh "${SECFORGE_TARGET_HOST}" -u "${ssh_users_file}" -p "${pw_list}"
+              sf_track_run netexec "${SECFORGE_SESSION_DIR}/passwords/netexec.txt" 600 "${SECFORGE_SESSION_DIR}/passwords/netexec.txt" "$(sf_tool nxc)" ssh "${SECFORGE_TARGET_HOST}" -u "${ssh_users_file}" -p "${pw_list}"
             fi
           fi
         else
@@ -654,6 +741,11 @@ main() {
       sf_log "Tier 2 skipped."
     fi
   fi
+
+  # Write scan manifest before merging
+  SF_MANIFEST_TOOLS_RUN="$(IFS=,; echo "${_SF_TOOLS_RUN[*]}")" \
+  SF_MANIFEST_TOOLS_FAILED="$(IFS=,; echo "${_SF_TOOLS_FAILED[*]}")" \
+  sf_write_manifest "${SECFORGE_SESSION_DIR}" "all"
 
   if [[ -r "${SCRIPT_DIR}/merge-reports.py" ]]; then
     sf_log "Merging reports..."

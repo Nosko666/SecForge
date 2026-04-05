@@ -52,8 +52,22 @@ def build_rules_and_results(findings: List[Dict[str, Any]]) -> Tuple[List[Dict[s
         desc = str(f.get("description") or "")
         sev = str(f.get("severity") or "INFO")
         tool = str(f.get("tool") or "secforge")
-        cwe = str(f.get("cwe") or "")
-        owasp = str(f.get("owasp") or "")
+
+        # Extract CWE/OWASP — v2 uses vuln.identifiers[], v1 uses flat cwe/owasp
+        cwe = ""
+        owasp = ""
+        vuln = f.get("vuln")
+        if isinstance(vuln, dict):
+            for ident in vuln.get("identifiers", []):
+                if isinstance(ident, dict):
+                    if ident.get("type") == "CWE" and not cwe:
+                        cwe = str(ident.get("value", ""))
+                    if ident.get("type") == "OWASP" and not owasp:
+                        owasp = str(ident.get("value", ""))
+        if not cwe:
+            cwe = str(f.get("cwe") or "")
+        if not owasp:
+            owasp = str(f.get("owasp") or "")
 
         rule_id = slug(f"{category}-{title}")
         if rule_id not in rules_by_id:
@@ -77,9 +91,14 @@ def build_rules_and_results(findings: List[Dict[str, Any]]) -> Tuple[List[Dict[s
         evidence = str(f.get("evidence") or "")
         if evidence:
             message_parts.append(f"Evidence: {evidence}")
-        remediation = str(f.get("remediation") or "")
-        if remediation:
-            message_parts.append(f"Remediation: {remediation}")
+        # v2: remediation is a dict with .summary; v1: flat string
+        rem = f.get("remediation")
+        if isinstance(rem, dict):
+            rem_text = str(rem.get("summary") or "")
+        else:
+            rem_text = str(rem or "")
+        if rem_text:
+            message_parts.append(f"Remediation: {rem_text}")
 
         result: Dict[str, Any] = {
             "ruleId": rule_id,
@@ -97,7 +116,12 @@ def build_rules_and_results(findings: List[Dict[str, Any]]) -> Tuple[List[Dict[s
             },
         }
 
-        url = str(f.get("url") or "")
+        # v2: URL from asset.url or asset.host; v1: flat url field
+        asset = f.get("asset")
+        if isinstance(asset, dict):
+            url = str(asset.get("url") or asset.get("host") or "")
+        else:
+            url = str(f.get("url") or "")
         if url:
             result["locations"] = [
                 {

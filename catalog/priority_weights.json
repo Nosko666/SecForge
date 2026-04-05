@@ -29,7 +29,7 @@
   },
   "age": {
     "weight": 5,
-    "values": {"90d+": 5, "30d+": 3, "fresh": 1, "reopened_bonus": 3}
+    "values": {"ancient": 5, "old": 3, "recent": 2, "fresh": 1, "reopened_bonus": 3}
   },
   "labels": {
     "critical": {"min": 90},

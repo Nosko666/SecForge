@@ -32,6 +32,8 @@ class StateDB:
     def open(self) -> bool:
         """Open the database. Returns False if root (skip writes) or file not accessible."""
         if self._is_root:
+            import sys
+            print("[secforge] WARN: Running as root — skipping state DB writes.", file=sys.stderr)
             return False  # Root never writes to state DB
         try:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -233,8 +235,20 @@ class StateDB:
                          f.get("tool", ""), f.get("cluster_id", "other"),
                          project_id, fp)
                     )
+                elif old_status in ("ignored", "accepted_risk", "false_positive"):
+                    # Preserve manual intent — don't overwrite with "existing"
+                    f["status"] = old_status
+                    f["first_seen"] = row["first_seen"]
+                    self._conn.execute(
+                        """UPDATE findings SET last_seen=?,
+                           severity=?, confidence=?, tool=?, cluster_id=?
+                           WHERE project_id=? AND fingerprint=?""",
+                        (now, f.get("severity", "info"), f.get("confidence", "possible"),
+                         f.get("tool", ""), f.get("cluster_id", "other"),
+                         project_id, fp)
+                    )
                 else:
-                    # Existing
+                    # Existing (new/existing/reopened → existing)
                     f["status"] = "existing"
                     f["first_seen"] = row["first_seen"]
                     self._conn.execute(
@@ -262,7 +276,10 @@ class StateDB:
                  now)
             )
 
-        # Mark findings as fixed if their tool succeeded but they're missing from this scan
+        # Mark findings as fixed if ANY of their historically-detecting tools succeeded
+        # but the fingerprint is missing from the current scan.
+        # This prevents cross-tool findings from being stuck "existing" just because
+        # the primary tool didn't run — any tool that ever detected it can clear it.
         if tools_succeeded:
             existing_rows = self._conn.execute(
                 "SELECT fingerprint, tool, status FROM findings WHERE project_id=? AND status IN ('new','existing','reopened')",
@@ -272,12 +289,26 @@ class StateDB:
             for row in existing_rows:
                 fp = row["fingerprint"]
                 if fp not in current_fps:
-                    tool = row["tool"] or ""
-                    if tool in tools_succeeded:
+                    # Check primary tool first
+                    primary_tool = row["tool"] or ""
+                    if primary_tool in tools_succeeded:
                         self._conn.execute(
                             "UPDATE findings SET status='fixed', fixed_at=? WHERE project_id=? AND fingerprint=?",
                             (now, project_id, fp)
                         )
+                        continue
+                    # Check all historical detecting tools from finding_scans
+                    hist_tools = self._conn.execute(
+                        "SELECT DISTINCT tool FROM finding_scans WHERE fingerprint=? AND project_id=? AND tool != ''",
+                        (fp, project_id)
+                    ).fetchall()
+                    for ht in hist_tools:
+                        if (ht["tool"] or "") in tools_succeeded:
+                            self._conn.execute(
+                                "UPDATE findings SET status='fixed', fixed_at=? WHERE project_id=? AND fingerprint=?",
+                                (now, project_id, fp)
+                            )
+                            break
 
         self._conn.commit()
         return findings
@@ -297,6 +328,153 @@ class StateDB:
                 (project_id,)
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_finding_history(self, project_id: str, fingerprint: str) -> List[Dict[str, Any]]:
+        """Get full scan history for one finding."""
+        if not self._conn:
+            return []
+        rows = self._conn.execute(
+            "SELECT * FROM finding_scans WHERE project_id=? AND fingerprint=? ORDER BY scan_date DESC",
+            (project_id, fingerprint)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_diff(self, project_id: str, scan_id: str) -> Dict[str, List[Dict[str, Any]]]:
+        """Compare scan_id against the previous scan: new, fixed, reopened, existing."""
+        if not self._conn:
+            return {"new": [], "fixed": [], "reopened": [], "existing": []}
+
+        # Get ordered scans to find the previous one
+        scans = self._conn.execute(
+            "SELECT scan_id FROM scans WHERE project_id=? ORDER BY scan_date DESC",
+            (project_id,)
+        ).fetchall()
+        scan_ids = [r["scan_id"] for r in scans]
+
+        # Fingerprints in current scan
+        current_fps = set()
+        current_rows = self._conn.execute(
+            "SELECT * FROM finding_scans WHERE project_id=? AND scan_id=?",
+            (project_id, scan_id)
+        ).fetchall()
+        current_map = {}
+        for r in current_rows:
+            current_fps.add(r["fingerprint"])
+            current_map[r["fingerprint"]] = dict(r)
+
+        # Fingerprints in previous scan (if any)
+        prev_fps: set = set()
+        prev_scan_id = ""
+        if scan_id in scan_ids:
+            idx = scan_ids.index(scan_id)
+            if idx + 1 < len(scan_ids):
+                prev_scan_id = scan_ids[idx + 1]
+        if prev_scan_id:
+            prev_rows = self._conn.execute(
+                "SELECT fingerprint FROM finding_scans WHERE project_id=? AND scan_id=?",
+                (project_id, prev_scan_id)
+            ).fetchall()
+            prev_fps = {r["fingerprint"] for r in prev_rows}
+
+        result: Dict[str, List[Dict[str, Any]]] = {
+            "new": [], "fixed": [], "reopened": [], "existing": [],
+        }
+        # New: in current but not in previous
+        for fp in current_fps - prev_fps:
+            result["new"].append(current_map.get(fp, {"fingerprint": fp}))
+        # Fixed: in previous but not in current (check findings table status)
+        for fp in prev_fps - current_fps:
+            row = self._conn.execute(
+                "SELECT * FROM findings WHERE project_id=? AND fingerprint=?",
+                (project_id, fp)
+            ).fetchone()
+            if row:
+                result["fixed"].append(dict(row))
+        # Existing/reopened: in both
+        for fp in current_fps & prev_fps:
+            entry = current_map.get(fp, {"fingerprint": fp})
+            status = entry.get("status_at_scan", "existing")
+            if status == "reopened":
+                result["reopened"].append(entry)
+            else:
+                result["existing"].append(entry)
+
+        return result
+
+    def get_regressions(self, project_id: str, min_reopened: int = 2) -> List[Dict[str, Any]]:
+        """Findings that have been reopened multiple times."""
+        if not self._conn:
+            return []
+        rows = self._conn.execute(
+            "SELECT * FROM findings WHERE project_id=? AND reopened_count >= ? ORDER BY reopened_count DESC",
+            (project_id, min_reopened)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_finding_status(self, project_id: str, fingerprint: str,
+                           status: str, reason: str = "") -> bool:
+        """Set finding status (ignored/accepted_risk/false_positive) with note."""
+        if not self._conn:
+            return False
+        now = _utc_now()
+        self._conn.execute(
+            "UPDATE findings SET status=?, ignore_reason=? WHERE project_id=? AND fingerprint=?",
+            (status, reason, project_id, fingerprint)
+        )
+        if reason:
+            self._conn.execute(
+                "INSERT INTO finding_notes (fingerprint, project_id, note_type, note_text, created_at) VALUES (?, ?, ?, ?, ?)",
+                (fingerprint, project_id, status, reason, now)
+            )
+        self._conn.commit()
+        return True
+
+    def purge_before(self, project_id: str, before_date: str,
+                     delete_reports: bool = False) -> Dict[str, int]:
+        """Delete scan history older than before_date. Returns counts."""
+        if not self._conn:
+            return {"scans_deleted": 0, "finding_scans_deleted": 0}
+
+        # Get old scan IDs
+        old_scans = self._conn.execute(
+            "SELECT scan_id, session_path FROM scans WHERE project_id=? AND scan_date < ?",
+            (project_id, before_date)
+        ).fetchall()
+        scan_ids = [r["scan_id"] for r in old_scans]
+
+        fs_deleted = 0
+        for sid in scan_ids:
+            self._conn.execute("DELETE FROM finding_scans WHERE scan_id=? AND project_id=?", (sid, project_id))
+            fs_deleted += self._conn.execute("SELECT changes()").fetchone()[0]
+
+        self._conn.execute(
+            "DELETE FROM scans WHERE project_id=? AND scan_date < ?",
+            (project_id, before_date)
+        )
+        scans_deleted = self._conn.execute("SELECT changes()").fetchone()[0]
+        self._conn.commit()
+
+        if delete_reports:
+            import shutil
+            for r in old_scans:
+                sp = r["session_path"]
+                if sp and Path(sp).is_dir():
+                    try:
+                        shutil.rmtree(sp)
+                    except Exception:
+                        pass
+
+        return {"scans_deleted": scans_deleted, "finding_scans_deleted": fs_deleted}
+
+    def resolve_finding(self, project_id: str, sf_id: str) -> Optional[str]:
+        """Resolve SF-### ID to fingerprint via finding_scans."""
+        if not self._conn:
+            return None
+        row = self._conn.execute(
+            "SELECT fingerprint FROM finding_scans WHERE project_id=? AND sf_id=? ORDER BY scan_date DESC LIMIT 1",
+            (project_id, sf_id)
+        ).fetchone()
+        return row["fingerprint"] if row else None
 
     def __enter__(self):
         self.open()

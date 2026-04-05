@@ -399,6 +399,8 @@ def validate_finding(d: Dict[str, Any]) -> bool:
         return False
     if d["asset"]["type"] not in ASSET_TYPES:
         return False
+    if d.get("category", "") not in CATEGORY_VALUES:
+        return False
     return True
 
 

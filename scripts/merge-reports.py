@@ -2135,21 +2135,43 @@ def _run_v2_pipeline(session_dir: Path) -> Optional[Path]:
         ce.assign_clusters(deduped)
         cluster_objects = ce.build_cluster_objects(deduped)
 
-        # 7. Score
-        ps = PriorityScorer(catalog_dir)
-        ps.score_all(deduped)
+        # 7a. Enrich with first_seen/status from state DB (before scoring, so age factor works)
+        try:
+            _enrich_state = StateDB()
+            if _enrich_state.open():
+                _enrich_pid = target_host or "default"
+                for f in deduped:
+                    fp = f.get("fingerprint", "")
+                    if not fp:
+                        continue
+                    row = _enrich_state._conn.execute(
+                        "SELECT first_seen, status FROM findings WHERE project_id=? AND fingerprint=?",
+                        (_enrich_pid, fp)
+                    ).fetchone()
+                    if row:
+                        f["first_seen"] = row["first_seen"]
+                        db_status = row["status"]
+                        if db_status == "fixed":
+                            # Finding reappeared after being fixed → will be reopened by upsert
+                            # Pre-set so scoring applies reopened_bonus
+                            f["status"] = "reopened"
+                        else:
+                            f["status"] = db_status
+                _enrich_state.close()
+        except Exception:
+            pass  # Best-effort; scoring still works with defaults
 
-        # 8. Fix location baseline
+        # 7b. Fix location baseline (before scoring so ease_of_fix reads remediation.difficulty)
         fli = FixLocationInference(catalog_dir)
         fli.assign_fix_locations(deduped)
 
-        # 9. Fix packs
+        # 7c. Score
+        ps = PriorityScorer(catalog_dir)
+        ps.score_all(deduped)
+
+        # 9. Fix packs (FixPackGenerator already computes pack priority from member findings)
         fpg = FixPackGenerator(catalog_dir)
         fix_packs = fpg.generate(deduped, cluster_objects)
-        for pack in fix_packs:
-            # Score packs
-            pack_findings = [f for f in deduped if f.get("cluster_id") == pack["fix_pack_id"].replace("FP-", "")]
-            ps.score_pack(pack, pack_findings)
 
         # 10. Sort + assign SF-### IDs
         sev_order = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}
@@ -2187,7 +2209,7 @@ def _run_v2_pipeline(session_dir: Path) -> Optional[Path]:
                 {"id": f["id"], "title": f["title"], "fingerprint": f["fingerprint"]}
                 for f in deduped if f.get("severity") == "critical"
             ][:5],
-            "tools_run": sorted(set(f.get("tool", "") for f in deduped if f.get("tool"))),
+            "tools_run": sorted(tools_run_list) if tools_run_list else sorted(set(f.get("tool", "") for f in deduped if f.get("tool"))),
             "scan_duration_seconds": None,
         }
         for f in deduped:

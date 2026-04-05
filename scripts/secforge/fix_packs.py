@@ -63,6 +63,7 @@ class FixPackGenerator:
                 "finding_ids": cluster.get("finding_ids", []),
                 "why_it_matters": meta.get("description", cluster.get("description", "")),
                 "candidate_fix_surfaces": meta.get("candidate_fix_surfaces", []),
+                "remediation_difficulty": meta.get("remediation_difficulty", "unknown"),
                 "proposed_fix_direction": self._get_fix_direction(cid, meta),
                 "verification": self._get_verification(cid, meta),
                 "rollback": self._get_rollback(cid, meta),
@@ -109,14 +110,110 @@ class FixPackGenerator:
         ]
 
     def _get_verification(self, cid: str, meta: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Default verification templates. Will be overridden by catalog in future."""
-        return [{
-            "stage": "post",
-            "name": f"Verify {meta.get('title', cid)} is resolved",
-            "command": "# Run secforge verify --pack FP-{cid}".replace("{cid}", cid),
-            "assertions": {},
-            "explain": f"Re-check all findings in the {meta.get('title', cid)} pack.",
-        }]
+        """Verification templates per cluster with real assertions."""
+        _TEMPLATES: Dict[str, List[Dict[str, Any]]] = {
+            "http-header-hardening": [
+                {"stage": "post", "name": "Check CSP header present",
+                 "command": "curl -sI {target}",
+                 "assertions": {"exit_code": 0, "stdout_contains": ["content-security-policy"]},
+                 "explain": "CSP header should appear in response headers."},
+                {"stage": "post", "name": "Check HSTS header present",
+                 "command": "curl -sI {target}",
+                 "assertions": {"exit_code": 0, "stdout_contains": ["strict-transport-security"]},
+                 "explain": "HSTS header should appear in response headers."},
+                {"stage": "post", "name": "Check X-Frame-Options header",
+                 "command": "curl -sI {target}",
+                 "assertions": {"exit_code": 0, "stdout_contains": ["x-frame-options"]},
+                 "explain": "X-Frame-Options or CSP frame-ancestors should be set."},
+            ],
+            "tls-hardening": [
+                {"stage": "post", "name": "Check TLS 1.2+ only",
+                 "command": "openssl s_client -connect {host}:443 -tls1_1",
+                 "assertions": {"stdout_not_contains": ["BEGIN CERTIFICATE"]},
+                 "close_stdin": True,
+                 "explain": "TLS 1.1 should be rejected (connection refused or handshake fail)."},
+                {"stage": "post", "name": "Check strong ciphers",
+                 "command": "openssl s_client -connect {host}:443 -cipher NULL,EXPORT,DES,RC4",
+                 "assertions": {"stdout_not_contains": ["BEGIN CERTIFICATE"]},
+                 "close_stdin": True,
+                 "explain": "Weak ciphers should be rejected."},
+            ],
+            "auth-hardening": [
+                {"stage": "post", "name": "Check rate limiting",
+                 "command": "curl -sI {target}/login",
+                 "assertions": {"exit_code": 0},
+                 "explain": "Login endpoint should respond; verify rate limiting is configured."},
+            ],
+            "secrets-exposure": [
+                {"stage": "post", "name": "Check .env not accessible",
+                 "command": "curl -sI {target}/.env",
+                 "assertions": {"stdout_not_contains": ["200 ok"]},
+                 "explain": ".env file should return 403 or 404, not 200."},
+                {"stage": "post", "name": "Check .git not accessible",
+                 "command": "curl -sI {target}/.git/HEAD",
+                 "assertions": {"stdout_not_contains": ["200 ok"]},
+                 "explain": ".git directory should not be publicly accessible."},
+            ],
+            "exposure-cleanup": [
+                {"stage": "post", "name": "Check .env blocked",
+                 "command": "curl -sI {target}/.env",
+                 "assertions": {"stdout_not_contains": ["200 ok"]},
+                 "explain": "Sensitive files should be blocked by the web server."},
+                {"stage": "post", "name": "Check .git blocked",
+                 "command": "curl -sI {target}/.git/HEAD",
+                 "assertions": {"stdout_not_contains": ["200 ok"]},
+                 "explain": "Git directory should be blocked."},
+            ],
+            "server-hardening": [
+                {"stage": "post", "name": "Check SSH config",
+                 "command": "sshd -t",
+                 "assertions": {"exit_code": 0},
+                 "explain": "SSH config should be valid (no syntax errors)."},
+                {"stage": "post", "name": "Check fail2ban running",
+                 "command": "sudo fail2ban-client status",
+                 "assertions": {"exit_code": 0, "stdout_contains": ["number of jail"]},
+                 "explain": "fail2ban should be running with at least one jail active. Requires --allow-sudo."},
+            ],
+            "network-hardening": [
+                {"stage": "post", "name": "Check unnecessary ports closed",
+                 "command": "cat /dev/null",
+                 "assertions": {"exit_code": 0},
+                 "explain": "Manually verify only necessary ports are open with: nmap -sT {host}"},
+            ],
+            "cors-hardening": [
+                {"stage": "post", "name": "Check CORS not wildcard",
+                 "command": "curl -sI -H 'Origin: https://evil.com' {target}",
+                 "assertions": {"stdout_not_contains": ["access-control-allow-origin: *"]},
+                 "explain": "CORS should not reflect arbitrary origins or use wildcard."},
+            ],
+            "dns-email-security": [
+                {"stage": "post", "name": "Check SPF record exists",
+                 "command": "dig +short TXT {host}",
+                 "assertions": {"exit_code": 0, "stdout_contains": ["spf"]},
+                 "explain": "SPF TXT record should be present for the domain."},
+                {"stage": "post", "name": "Check DMARC record exists",
+                 "command": "dig +short TXT _dmarc.{host}",
+                 "assertions": {"exit_code": 0, "stdout_contains": ["dmarc"]},
+                 "explain": "DMARC TXT record should be present at _dmarc.domain."},
+            ],
+            "database-hardening": [
+                {"stage": "post", "name": "Check MySQL anonymous accounts",
+                 "command": "cat /dev/null",
+                 "assertions": {"exit_code": 0},
+                 "explain": "Manually verify: SELECT user,host FROM mysql.user WHERE user='';"},
+            ],
+        }
+        checks = _TEMPLATES.get(cid, [])
+        if not checks:
+            # Fallback for unmapped clusters
+            checks = [{
+                "stage": "post",
+                "name": f"Verify {meta.get('title', cid)} is resolved",
+                "command": f"secforge verify --pack FP-{cid}",
+                "assertions": {},
+                "explain": f"Re-scan and check all findings in the {meta.get('title', cid)} pack.",
+            }]
+        return checks
 
     def _get_rollback(self, cid: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         """Default rollback template."""

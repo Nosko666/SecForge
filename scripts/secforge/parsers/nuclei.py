@@ -12,18 +12,59 @@ from secforge.normalize import normalize_severity_v2, redact_text, truncate
 
 # Nuclei template tags → issue_key mapping (tool-specific knowledge)
 _TAG_TO_ISSUE_KEY = {
+    # Headers
     "csp": "headers.missing_csp",
     "hsts": "headers.missing_hsts",
     "x-frame-options": "headers.missing_xfo",
+    "x-content-type-options": "headers.missing_xcto",
+    "x-powered-by": "headers.missing_xpb",
+    "referrer-policy": "headers.missing_referrer_policy",
+    "permissions-policy": "headers.missing_permissions_policy",
+    # XSS
     "xss": "xss.reflected",
+    "stored-xss": "xss.stored",
+    "dom-xss": "xss.dom",
+    # Injection
     "sqli": "sqli.generic",
+    "blind-sqli": "sqli.blind",
     "ssrf": "injection.ssrf",
     "lfi": "injection.lfi",
     "rce": "injection.command",
     "ssti": "injection.ssti",
     "xxe": "injection.xxe",
-    "cors": "cors.misconfigured",
+    # TLS
+    "ssl": "tls.weak_protocol",
+    "tls": "tls.weak_protocol",
+    "weak-cipher": "tls.weak_cipher",
+    # Auth
+    "default-login": "auth.credentials_found",
+    "default-credentials": "auth.credentials_found",
+    "brute-force": "auth.brute_force_possible",
+    "csrf": "auth.missing_csrf",
+    "jwt": "auth.insecure_jwt",
+    # Exposure
     "exposure": "exposure.admin_panel",
+    "exposed-panel": "exposure.admin_panel",
+    "backup": "exposure.backup_file",
+    "git": "exposure.git_directory",
+    "config": "exposure.env_file",
+    "env": "exposure.env_file",
+    "directory-listing": "exposure.directory_listing",
+    # CORS
+    "cors": "cors.misconfigured",
+    # Cookies
+    "cookie": "cookies.missing_secure",
+    # Network / Misconfig
+    "misconfig": "misconfig.http_trace_enabled",
+    "misconfiguration": "misconfig.http_trace_enabled",
+    # Secrets
+    "token": "secrets.generic",
+    "secret": "secrets.generic",
+    "api-key": "secrets.generic",
+    # Discovery
+    "tech": "discovery.tech_fingerprint",
+    "waf": "discovery.waf_detected",
+    "subdomain": "discovery.subdomains_found",
 }
 
 

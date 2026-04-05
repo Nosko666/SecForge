@@ -29,11 +29,16 @@ Reporting:
     --detail beginner|operator|analyst
     --session <session_id>     Use specific scan session
     --out <path>               Write to file instead of stdout
+    --system <info>            System/OS context for fix generation
+    --stack <hints>            Tech stack hints (e.g. "nginx, node")
+    --inspect                  Probe local config files for precise fix locations
 
 Verification:
   verify --finding SF-###      Show verification commands for a finding
   verify --pack FP-xxx         Show verification for a fix pack
     --run                      Execute safe commands (allowlisted)
+    --allow-noisy              Also run noisy commands (nmap, testssl.sh)
+    --allow-sudo               Also run sudo-gated commands (ufw, iptables, etc.)
     --stage pre|post|both      Filter by verification stage
 
 History & State:
@@ -88,6 +93,9 @@ pack_id = None
 detail = 'operator'
 session_spec = None
 out_path = None
+system_info = None
+stack_hints = None
+inspect_mode = False
 
 i = 0
 while i < len(args):
@@ -106,6 +114,12 @@ while i < len(args):
         session_spec = args[i+1]; i += 2
     elif a == '--out' and i+1 < len(args):
         out_path = args[i+1]; i += 2
+    elif a == '--system' and i+1 < len(args):
+        system_info = args[i+1]; i += 2
+    elif a == '--stack' and i+1 < len(args):
+        stack_hints = args[i+1]; i += 2
+    elif a == '--inspect':
+        inspect_mode = True; i += 1
     else:
         i += 1
 
@@ -120,7 +134,17 @@ if not fj_path or not fj_path.exists():
     sys.exit(2)
 
 data = load_findings(fj_path)
-output = export(mode, data, finding_id=finding_id, pack_id=pack_id, detail=detail)
+
+# Re-compute fix locations with --inspect if requested
+if inspect_mode:
+    from secforge.fix_location import FixLocationInference
+    catalog_dir = Path('${SCRIPT_DIR}') / '..' / 'catalog'
+    catalog_dir = catalog_dir.resolve()
+    fli = FixLocationInference(catalog_dir)
+    fli.assign_fix_locations(data.get('findings', []), inspect=True)
+
+output = export(mode, data, finding_id=finding_id, pack_id=pack_id, detail=detail,
+                system_info=system_info, stack_hints=stack_hints)
 
 if out_path:
     Path(out_path).write_text(output, encoding='utf-8')
@@ -143,6 +167,7 @@ finding_id = None
 pack_id = None
 execute = False
 allow_noisy = False
+allow_sudo = False
 stage = None
 
 i = 0
@@ -156,6 +181,8 @@ while i < len(args):
         execute = True; i += 1
     elif a == '--allow-noisy':
         allow_noisy = True; i += 1
+    elif a == '--allow-sudo':
+        allow_sudo = True; i += 1
     elif a == '--stage' and i+1 < len(args):
         stage = args[i+1]; i += 2
     else:
@@ -169,25 +196,53 @@ if not fj_path or not fj_path.exists():
 
 data = load_findings(fj_path)
 
-# Collect verification checks
+# Build context for placeholder substitution
+target = data.get('target', '')
+target_url = ''
+if target:
+    target_url = target if target.startswith('http') else f'https://{target}'
+ctx = {'target': target_url, 'host': target}
+
+# Resolve project_id for DB logging
+project_id = target or 'default'
+scan_id = fj_path.parent.name
+
+# Collect verification checks + resolve fingerprint
 checks = []
+fingerprint = ''
 if finding_id:
     for f in data.get('findings', []):
         if f.get('id') == finding_id:
             checks.extend(f.get('verification', []))
+            fingerprint = f.get('fingerprint', '')
+            # Fallback: if no finding-level checks, use the pack's checks via cluster_id
+            if not checks:
+                cid = f.get('cluster_id', 'other')
+                pack_lookup = f'FP-{cid}'
+                for p in data.get('fix_packs', []):
+                    if p.get('fix_pack_id') == pack_lookup:
+                        checks.extend(p.get('verification', []))
+                        break
             break
 elif pack_id:
     normalized = pack_id if pack_id.startswith('FP-') else f'FP-{pack_id}'
     for p in data.get('fix_packs', []):
         if p.get('fix_pack_id') == normalized:
             checks.extend(p.get('verification', []))
+            # Use first finding fingerprint for pack-level logging
+            fids = p.get('finding_ids', [])
+            if fids:
+                for f in data.get('findings', []):
+                    if f.get('id') == fids[0]:
+                        fingerprint = f.get('fingerprint', '')
+                        break
             break
 
 if not checks:
     print('No verification checks found for the specified finding/pack.', file=sys.stderr)
     sys.exit(1)
 
-results = run_verification(checks, stage_filter=stage, execute=execute, allow_noisy=allow_noisy)
+results = run_verification(checks, stage_filter=stage, execute=execute, allow_noisy=allow_noisy, allow_sudo=allow_sudo, context=ctx)
 
 # Display results
 for r in results:
@@ -206,16 +261,267 @@ total = len(results)
 if execute:
     print(f'Results: {passed}/{total} passed')
 
-# Write results to session if we have a session dir
+# Write results to session + DB
 session_dir = fj_path.parent
 if session_dir.is_dir():
-    write_results(results, session_dir)
+    write_results(results, session_dir, fingerprint=fingerprint, project_id=project_id, scan_id=scan_id)
 " "$@"
     ;;
 
-  list|diff|history|purge)
-    # Placeholder for Step 15 query commands — will use state.py
-    sf_die "Command '${cmd}' is implemented in the v2 state module. Coming soon."
+  list)
+    exec python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+from secforge.state import StateDB
+from secforge.export_ai import resolve_session, load_findings
+from pathlib import Path
+
+args = sys.argv[1:]
+show_regressions = '--regressions' in args
+show_accepted = '--accepted' in args
+show_failed_verif = '--failed-verifications' in args
+
+# Determine project_id from latest findings
+reports_dir = Path('${SECFORGE_ROOT}/reports')
+fj_path = resolve_session(reports_dir)
+project_id = 'default'
+if fj_path and fj_path.exists():
+    data = load_findings(fj_path)
+    project_id = data.get('target', 'default')
+
+state = StateDB()
+if not state.open():
+    # Fallback: read directly from findings.json
+    if fj_path and fj_path.exists():
+        data = load_findings(fj_path)
+        packs = data.get('fix_packs', [])
+        findings = data.get('findings', [])
+        by_pack = {}
+        for f in findings:
+            cid = f.get('cluster_id', 'other')
+            by_pack.setdefault(cid, []).append(f)
+        print(f'Open findings: {len(findings)}')
+        print()
+        for p in packs:
+            print(f\"  {p.get('fix_pack_id','')}: {p.get('title','')} ({p.get('total',0)} findings, {p.get('priority_label','?')} priority)\")
+            for fid in p.get('finding_ids', [])[:5]:
+                ff = next((f for f in findings if f.get('id') == fid), None)
+                if ff:
+                    print(f\"    {fid} [{ff.get('severity','?')}]: {ff.get('title','')}\")
+            if p.get('total', 0) > 5:
+                print(f\"    ... and {p['total'] - 5} more\")
+            print()
+    else:
+        print('No findings.json found. Run a scan first.', file=sys.stderr)
+        sys.exit(2)
+    sys.exit(0)
+
+if show_failed_verif:
+    conn = state._conn
+    if conn:
+        rows = conn.execute(
+            \"SELECT fingerprint, run_date, stage, command, result, output_snippet FROM verification_runs WHERE project_id=? AND result='fail' ORDER BY run_date DESC LIMIT 50\",
+            (project_id,)
+        ).fetchall()
+        if not rows:
+            print('No failed verifications found.')
+        else:
+            print(f'Failed verifications ({len(rows)}):')
+            for r in rows:
+                print(f\"  {r['run_date']} [{r['stage']}] {r['command'][:60]}\")
+                if r['output_snippet']:
+                    print(f\"    Output: {r['output_snippet'][:120]}\")
+    else:
+        print('State DB not available.', file=sys.stderr)
+elif show_regressions:
+    regs = state.get_regressions(project_id)
+    if not regs:
+        print('No regressions found.')
+    for r in regs:
+        print(f\"  {r['fingerprint'][:12]}... [{r['severity']}] reopened {r['reopened_count']}x: {r.get('normalized_title','')}\")
+elif show_accepted:
+    for status in ('ignored', 'accepted_risk', 'false_positive'):
+        rows = state.get_findings(project_id, status=status)
+        if rows:
+            print(f\"\n{status.replace('_',' ').title()} ({len(rows)}):\")
+            for r in rows:
+                print(f\"  {r['fingerprint'][:12]}... [{r['severity']}]: {r.get('normalized_title','')} — {r.get('ignore_reason','')}\")
+else:
+    # Group by fix pack (cluster_id) when DB is available
+    rows = state.get_findings(project_id)
+    open_rows = [r for r in rows if r['status'] not in ('fixed','ignored','accepted_risk','false_positive')]
+    print(f'Findings: {len(open_rows)} open, {len(rows)} total')
+    print()
+
+    # Try to group by fix pack from findings.json
+    if fj_path and fj_path.exists():
+        packs = data.get('fix_packs', [])
+        findings_list = data.get('findings', [])
+        for p in packs:
+            pack_id = p.get('fix_pack_id', '')
+            pack_fids = set(p.get('finding_ids', []))
+            # Match DB rows to pack via cluster_id
+            cid = pack_id.replace('FP-', '')
+            pack_rows = [r for r in open_rows if r.get('cluster_id') == cid]
+            if not pack_rows:
+                continue
+            print(f\"  {pack_id}: {p.get('title','')} ({len(pack_rows)} open, {p.get('priority_label','?')} priority)\")
+            for r in pack_rows[:5]:
+                print(f\"    [{r['severity']:>8}] {r['fingerprint'][:12]}... {r.get('normalized_title','')}\")
+            if len(pack_rows) > 5:
+                print(f\"    ... and {len(pack_rows) - 5} more\")
+            print()
+    else:
+        # No findings.json — flat list
+        for r in open_rows[:50]:
+            print(f\"  [{r['status']:>8}] [{r['severity']:>8}] {r['fingerprint'][:12]}... {r.get('normalized_title','')}\")
+state.close()
+" "$@"
+    ;;
+
+  diff)
+    exec python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+from secforge.state import StateDB
+from secforge.export_ai import resolve_session, load_findings
+from pathlib import Path
+
+reports_dir = Path('${SECFORGE_ROOT}/reports')
+fj_path = resolve_session(reports_dir)
+project_id = 'default'
+if fj_path and fj_path.exists():
+    data = load_findings(fj_path)
+    project_id = data.get('target', 'default')
+    scan_id = fj_path.parent.name
+else:
+    print('No findings.json found.', file=sys.stderr)
+    sys.exit(2)
+
+state = StateDB()
+if not state.open():
+    print('State DB not available. Showing findings.json summary instead.', file=sys.stderr)
+    summary = data.get('summary', {})
+    counts = summary.get('severity_counts', {})
+    print(f\"Total: {summary.get('total_findings',0)} findings\")
+    for sev in ('critical','high','medium','low','info'):
+        c = counts.get(sev, 0)
+        if c: print(f\"  {sev}: {c}\")
+    sys.exit(0)
+
+diff = state.get_diff(project_id, scan_id)
+for label in ('new', 'reopened', 'fixed', 'existing'):
+    items = diff[label]
+    if items:
+        print(f\"\n{label.upper()} ({len(items)}):\")
+        for r in items[:20]:
+            print(f\"  [{r['severity']:>8}] {r['fingerprint'][:12]}... {r.get('normalized_title','')}\")
+        if len(items) > 20:
+            print(f\"  ... and {len(items)-20} more\")
+
+state.close()
+" "$@"
+    ;;
+
+  history)
+    exec python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+from secforge.state import StateDB
+from secforge.export_ai import resolve_session, load_findings
+from pathlib import Path
+
+args = sys.argv[1:]
+finding_id = None
+i = 0
+while i < len(args):
+    if args[i] == '--finding' and i+1 < len(args):
+        finding_id = args[i+1]; i += 2
+    else:
+        i += 1
+
+if not finding_id:
+    print('Usage: secforge history --finding SF-###', file=sys.stderr)
+    sys.exit(2)
+
+reports_dir = Path('${SECFORGE_ROOT}/reports')
+fj_path = resolve_session(reports_dir)
+project_id = 'default'
+if fj_path and fj_path.exists():
+    data = load_findings(fj_path)
+    project_id = data.get('target', 'default')
+
+state = StateDB()
+if not state.open():
+    print('State DB not available.', file=sys.stderr)
+    sys.exit(1)
+
+# Resolve SF-### to fingerprint
+fp = state.resolve_finding(project_id, finding_id)
+if not fp:
+    print(f'Finding {finding_id} not found in state DB.', file=sys.stderr)
+    state.close()
+    sys.exit(1)
+
+history = state.get_finding_history(project_id, fp)
+if not history:
+    print(f'No history for {finding_id} (fingerprint: {fp[:16]}...)')
+else:
+    print(f'History for {finding_id} (fingerprint: {fp[:16]}...):')
+    for h in history:
+        print(f\"  {h['scan_date']} scan={h['scan_id'][:20]}... status={h['status_at_scan']} sev={h['severity']} tool={h['tool']}\")
+state.close()
+" "$@"
+    ;;
+
+  purge)
+    exec python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+from secforge.state import StateDB
+from secforge.export_ai import resolve_session, load_findings
+from pathlib import Path
+
+args = sys.argv[1:]
+before_date = None
+delete_reports = '--delete-reports' in args
+dry_run = '--dry-run' in args
+i = 0
+while i < len(args):
+    if args[i] == '--before' and i+1 < len(args):
+        before_date = args[i+1]; i += 2
+    else:
+        i += 1
+
+if not before_date:
+    print('Usage: secforge purge --before YYYY-MM-DD [--delete-reports] [--dry-run]', file=sys.stderr)
+    sys.exit(2)
+
+reports_dir = Path('${SECFORGE_ROOT}/reports')
+fj_path = resolve_session(reports_dir)
+project_id = 'default'
+if fj_path and fj_path.exists():
+    data = load_findings(fj_path)
+    project_id = data.get('target', 'default')
+
+state = StateDB()
+if not state.open():
+    print('State DB not available.', file=sys.stderr)
+    sys.exit(1)
+
+if dry_run:
+    conn = state._conn
+    scans = conn.execute('SELECT scan_id, scan_date, session_path FROM scans WHERE project_id=? AND scan_date < ?', (project_id, before_date)).fetchall()
+    print(f'Would delete {len(scans)} scan(s) before {before_date}:')
+    for s in scans:
+        print(f\"  {s['scan_id']} ({s['scan_date']})\")
+        if delete_reports and s['session_path']:
+            print(f\"    → would remove {s['session_path']}\")
+else:
+    result = state.purge_before(project_id, before_date, delete_reports=delete_reports)
+    print(f\"Purged: {result['scans_deleted']} scans, {result['finding_scans_deleted']} finding_scan records\")
+state.close()
+" "$@"
     ;;
 
   status)
@@ -227,7 +533,55 @@ if session_dir.is_dir():
     ;;
 
   ignore|accept|false-positive)
-    sf_die "Command '${cmd}' requires the state database. Coming soon."
+    exec python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+from secforge.state import StateDB
+from secforge.export_ai import resolve_session, load_findings
+from pathlib import Path
+
+cmd = '${cmd}'
+args = sys.argv[1:]
+finding_id = args[0] if args and args[0].startswith('SF-') else None
+reason = ''
+i = 0
+while i < len(args):
+    if args[i] == '--reason' and i+1 < len(args):
+        reason = args[i+1]; i += 2
+    elif not args[i].startswith('SF-'):
+        i += 1
+    else:
+        i += 1
+
+if not finding_id:
+    print(f'Usage: secforge {cmd} SF-### --reason \"...\"', file=sys.stderr)
+    sys.exit(2)
+
+status_map = {'ignore': 'ignored', 'accept': 'accepted_risk', 'false-positive': 'false_positive'}
+new_status = status_map.get(cmd, 'ignored')
+
+reports_dir = Path('${SECFORGE_ROOT}/reports')
+fj_path = resolve_session(reports_dir)
+project_id = 'default'
+if fj_path and fj_path.exists():
+    data = load_findings(fj_path)
+    project_id = data.get('target', 'default')
+
+state = StateDB()
+if not state.open():
+    print('State DB not available.', file=sys.stderr)
+    sys.exit(1)
+
+fp = state.resolve_finding(project_id, finding_id)
+if not fp:
+    print(f'Finding {finding_id} not found in state DB.', file=sys.stderr)
+    state.close()
+    sys.exit(1)
+
+state.set_finding_status(project_id, fp, new_status, reason)
+print(f'{finding_id} marked as {new_status}' + (f': {reason}' if reason else ''))
+state.close()
+" "$@"
     ;;
 
   version)

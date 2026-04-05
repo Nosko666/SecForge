@@ -102,5 +102,7 @@
   "discovery.live_hosts_found": {"cluster_id": "reconnaissance", "normalized_title": "live hosts discovered", "category": "discovery", "fingerprint_type": "web_server_level"},
   "discovery.paths_found": {"cluster_id": "reconnaissance", "normalized_title": "content discovery results", "category": "discovery", "fingerprint_type": "web_server_level"},
   "discovery.waf_detected": {"cluster_id": "reconnaissance", "normalized_title": "waf detection result", "category": "discovery", "fingerprint_type": "web_server_level"},
-  "discovery.tech_fingerprint": {"cluster_id": "reconnaissance", "normalized_title": "technology fingerprint", "category": "discovery", "fingerprint_type": "web_server_level"}
+  "discovery.tech_fingerprint": {"cluster_id": "reconnaissance", "normalized_title": "technology fingerprint", "category": "discovery", "fingerprint_type": "web_server_level"},
+  "discovery.oob_no_callbacks": {"cluster_id": "reconnaissance", "normalized_title": "no out-of-band callbacks received", "category": "discovery", "fingerprint_type": "web_server_level"},
+  "discovery.ssrf_probe_suspicious": {"cluster_id": "injection-prevention", "normalized_title": "ssrf probe returned suspicious response", "category": "discovery", "fingerprint_type": "web_endpoint_level"}
 }

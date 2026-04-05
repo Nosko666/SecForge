@@ -9,6 +9,7 @@ Merges /opt/secforge/config/priority-weights.json if present (user overrides).
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -191,10 +192,25 @@ class PriorityScorer:
         return vals.get("multi_endpoint", 4)
 
     def _score_age(self, f: Dict[str, Any]) -> int:
-        """Age scoring. For new scans without history, returns 'fresh'."""
+        """Age scoring based on first_seen from state DB (if available)."""
         vals = self._get_values("age")
         status = f.get("status", "new")
         if status == "reopened":
             return vals.get("fresh", 1) + vals.get("reopened_bonus", 3)
-        # Without state DB connection, default to fresh
+
+        # Compute age from first_seen if available
+        first_seen = f.get("first_seen", "")
+        if first_seen:
+            try:
+                fs = datetime.fromisoformat(first_seen.replace("Z", "+00:00"))
+                age_days = (datetime.now(timezone.utc) - fs).days
+                if age_days > 90:
+                    return vals.get("ancient", 5)
+                if age_days > 30:
+                    return vals.get("old", 3)
+                if age_days > 7:
+                    return vals.get("recent", 2)
+            except (ValueError, TypeError):
+                pass
+
         return vals.get("fresh", 1)

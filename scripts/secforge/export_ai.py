@@ -48,8 +48,9 @@ def export(
 
 def _front_matter(mode: str, data: Dict[str, Any],
                   system_info: Optional[str] = None,
-                  stack_hints: Optional[str] = None) -> str:
-    """Standard front-matter header for every export."""
+                  stack_hints: Optional[str] = None,
+                  detail_level: str = "operator") -> str:
+    """Standard front-matter header for every export (10 fields)."""
     target = data.get("target", "unknown")
     scan_date = data.get("scan_date", "")
     profile = data.get("scan_profile", "")
@@ -61,6 +62,7 @@ def _front_matter(mode: str, data: Dict[str, Any],
         f"target: {target}",
         f"scan_date: {scan_date}",
         f"scan_profile: {profile}",
+        f"detail_level: {detail_level}",
     ]
     if system_info:
         lines.append(f"system: {system_info}")
@@ -103,7 +105,7 @@ def _export_quick_fix(data: Dict[str, Any], finding_id: Optional[str],
     if not f:
         return f"Error: finding {finding_id} not found."
 
-    md = _front_matter("quick-fix", data)
+    md = _front_matter("quick-fix", data, detail_level=detail)
     md += f"## SecForge Fix: {f.get('title', '')} ({finding_id})\n\n"
     md += f"**Severity:** {f.get('severity', '?')} | "
     md += f"**Confidence:** {f.get('confidence', '?')} | "
@@ -159,11 +161,11 @@ def _export_fix_pack(data: Dict[str, Any], pack_id: Optional[str],
     if not pack:
         return f"Error: fix pack {pack_id} not found."
 
-    md = _front_matter("fix-pack", data, system_info, stack_hints)
+    md = _front_matter("fix-pack", data, system_info, stack_hints, detail_level=detail)
     md += f"## Fix Pack: {pack.get('title', '')} ({pack.get('fix_pack_id', '')})\n\n"
     md += f"**Priority:** {pack.get('priority_label', '?')} (score {pack.get('priority_score', '?')}) | "
     md += f"**Findings:** {pack.get('total', 0)} | "
-    md += f"**Difficulty:** {pack.get('candidate_fix_surfaces', ['?'])[0] if pack.get('candidate_fix_surfaces') else '?'}\n\n"
+    md += f"**Difficulty:** {pack.get('remediation_difficulty', '?')}\n\n"
 
     md += "### Why it matters\n"
     md += f"{pack.get('why_it_matters', pack.get('description', ''))}\n\n"
@@ -199,7 +201,7 @@ def _export_fix_pack(data: Dict[str, Any], pack_id: Optional[str],
 def _export_full_plan(data: Dict[str, Any], detail: str,
                       system_info: Optional[str],
                       stack_hints: Optional[str]) -> str:
-    md = _front_matter("full-plan", data, system_info, stack_hints)
+    md = _front_matter("full-plan", data, system_info, stack_hints, detail_level=detail)
     summary = data.get("summary", {})
     counts = summary.get("severity_counts", {})
 
@@ -241,7 +243,7 @@ def _export_patch(data: Dict[str, Any], pack_id: Optional[str],
     if not pack:
         return f"Error: fix pack {pack_id} not found."
 
-    md = _front_matter("patch", data, system_info, stack_hints)
+    md = _front_matter("patch", data, system_info, stack_hints, detail_level="operator")
     md += f"## Patch Request: {pack.get('title', '')} ({pack.get('fix_pack_id', '')})\n\n"
     md += "Generate exact config/code changes for each finding below.\n"
     md += "For each change: show the diff, explain the impact, and provide a verification command.\n\n"
