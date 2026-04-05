@@ -14,7 +14,8 @@ AUTHORIZED_TARGETS_FILE="/opt/secforge/config/.authorized_targets"
 # Scan defaults (ethical + vibecoder-friendly)
 SCAN_DELAY_MS="200"
 MAX_CONCURRENT_TOOLS="3"
-DEFAULT_TIER="1" # 1 = Tier 1 (passive). Tier 2 is always explicit opt-in.
+TIER_MAX="1"      # 1 = Tier 1 (passive). Tier 2 requires explicit opt-in.
+DEFAULT_TIER="1"   # Backward compat (TIER_MAX takes precedence)
 
 # Network scan defaults
 NMAP_TIMING="-T3"
@@ -40,6 +41,15 @@ ALLOW_SUDO_TOOLS="ask"
 # - only-upgrade: only upgrade packages SecForge installed (safer default)
 # - full-upgrade: full system upgrade (requires explicit confirmation)
 APT_UPDATE_STRATEGY="only-upgrade"
+
+# Target and environment (set by secforge init)
+DOMAIN=""
+ENVIRONMENT=""          # production, staging
+PAYMENTS=""             # yes, no
+ADMIN_IP=""             # For firewall whitelist during hardening
+
+# UX preferences
+GUM_TMUX_DECLINED=""    # Set to "1" if user declined gum/tmux install
 
 # Installer writes these at install-time (example value shown)
 INSTALLED_CATEGORIES=""
