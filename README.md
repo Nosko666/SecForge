@@ -1,15 +1,19 @@
 # SecForge
 
-AI-guided security toolkit for vibecoders: install on Ubuntu, then secure your web apps and servers by talking to your AI assistant in the terminal.
+AI-native security toolkit for vibecoders. 51 tools, smart dedup, fix packs, priority scoring, state tracking, 5 AI export modes. One install, Claude/Codex runs everything.
 
 ## Why SecForge?
 
-Most developers who build with AI aren’t security experts. SecForge bundles (and safely orchestrates) common security scanners, hardening checks, and report merging so you can say:
-- “Scan my site”
-- “Harden this server”
-- “Run a safe audit only”
+Most developers who build with AI aren’t security experts. SecForge bundles 51 security scanners into a single CLI that AI assistants know how to operate. You say “scan my site” and get back prioritized **fix packs** — grouped, scored, verified remediation plans, not raw vulnerability dumps.
 
-…and get a clear, prioritized findings report with verification steps and guardrails (authorization prompts, Tier 1/Tier 2 scanning, and lockout-prevention protocols).
+**What makes v2 different:**
+- **Fix packs, not findings lists** — related issues grouped by root cause (e.g., “HTTP Header Hardening: 12 findings, easy fix”)
+- **Priority scoring** — 7-factor scoring (0-100) considers severity, exposure, confidence, ease of fix, multi-tool confirmation, blast radius, and age
+- **State tracking** — SQLite DB tracks findings across scans: new, existing, fixed, reopened, ignored
+- **Conservative fixed-gating** — findings only marked “fixed” when the detecting tool ran successfully AND the fingerprint is absent
+- **5 AI export modes** — quick-fix, fix-pack, full-plan, patch, explain — each with YAML front-matter for AI context
+- **Verification runner** — safe command allowlist, structured assertions, auto PASS/FAIL after fixes
+- **Smart dedup** — 3-level deduplication (same-tool, cross-tool, cross-scan) with stable SHA-256 fingerprints
 
 ## Install (Ubuntu 20.04+)
 
@@ -22,26 +26,93 @@ What this does:
 - Runs the menu installer at `/opt/secforge/scripts/install.sh`
 - Installs selected tools, creates the runtime folders, and sets up `/opt/secforge/bin` in your PATH
 
-![Installer menu screenshot (placeholder)](docs/installer-menu.png)
-
 ## Quick Start
 
-```bash
-cd /opt/secforge
-```
+### With AI (recommended)
 
-Then start your AI assistant in that folder (e.g. Claude Code or Codex). Both read the same orchestration instructions:
-- `/opt/secforge/CLAUDE.md`
-- `/opt/secforge/AGENTS.md` (identical to `CLAUDE.md`)
+Start your AI assistant in `/opt/secforge/` (Claude Code, Codex, or any terminal AI). Both read the same orchestration instructions:
+- `/opt/secforge/CLAUDE.md` / `AGENTS.md` (identical)
 
 Example prompts:
-- “Scan my site https://example.com (Tier 1 only)”
-- “Run a Safe System Audit on this server”
+- “Scan my site https://example.com”
+- “Harden this server”
 - “Payment security audit for https://example.com/checkout”
 
-No AI? Run scripts directly:
-- `/opt/secforge/scripts/scan-quick.sh https://example.com`
-- `/opt/secforge/scripts/scan-all.sh https://example.com`
+### With the CLI
+
+```bash
+# Scan
+secforge scan example.com              # Quick Tier-1 scan
+secforge scan --full example.com       # Full scan (Tier 1 + Tier 2 opt-in)
+
+# Review results as fix packs
+secforge export --mode full-plan       # Prioritized remediation plan
+secforge export --mode fix-pack --pack http-header-hardening  # One pack
+secforge export --mode quick-fix --finding SF-003             # One finding
+secforge export --mode explain --finding SF-001               # Plain English
+secforge export --mode patch --pack tls-hardening             # Generate diffs
+
+# Verify fixes
+secforge verify --pack FP-http-header-hardening --run
+secforge verify --finding SF-003 --run
+
+# Track progress
+secforge list                          # Open findings grouped by fix pack
+secforge diff                          # What changed since last scan
+secforge history --finding SF-001      # Full history for one finding
+
+# Manage findings
+secforge ignore SF-007 --reason “False positive in test env”
+secforge accept SF-012 --reason “Accepted risk by team”
+secforge false-positive SF-003 --reason “Scanner false positive”
+```
+
+### No AI, no CLI? Raw scripts still work:
+
+```bash
+/opt/secforge/scripts/scan-quick.sh https://example.com
+/opt/secforge/scripts/scan-all.sh https://example.com
+```
+
+## v2 Architecture
+
+```
+secforge scan example.com
+    |
+    v
+  51 tools run (wafw00f, nuclei, nmap, testssl, wapiti, gitleaks, ...)
+    |
+    v
+  Parse → Issue Key → Fingerprint → Dedup → Cluster → Score → Fix Packs
+    |
+    v
+  findings.json: findings[], clusters[], fix_packs[], summary
+    |
+    v
+  State DB: new → existing → fixed → reopened (tracked across scans)
+    |
+    v
+  secforge export --mode fix-pack → AI-ready markdown with front-matter
+    |
+    v
+  secforge verify --run → automated PASS/FAIL checks
+```
+
+### Key components
+
+| Component | What it does |
+|-----------|-------------|
+| **29 parsers** | Parse output from 51 tools into normalized v2 findings |
+| **Issue key resolver** | Maps tool-specific IDs to 85 catalog entries + stable fallback |
+| **Fingerprint engine** | SHA-256[:32] with 7 canonical string templates per asset type |
+| **3-level dedup** | Same-tool collapse, cross-tool merge with sources[], cross-scan state |
+| **18 clusters** | Group related findings by root cause (headers, TLS, injection, secrets, ...) |
+| **Priority scorer** | 7 weighted factors: severity, exposure, confidence, ease, multi-tool, blast radius, age |
+| **Fix packs** | 1:1 with clusters — title, direction, verification, rollback, safety gates |
+| **State DB** | SQLite tracking: 7 statuses, conservative fixed-gating, manual intent preserved |
+| **5 export modes** | quick-fix, fix-pack, full-plan, patch, explain — each with YAML front-matter |
+| **Verification runner** | Safe command allowlist, shlex.split (no shell), sudo gating, structured assertions |
+| **--inspect** | Probes local config files (/etc/nginx, /etc/ssh) for high-confidence fix locations |
 
 ## Safety & Ethics (non-negotiable)
 
