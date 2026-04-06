@@ -93,7 +93,9 @@ if [[ "$target" == "this_server" || "$target" == "localhost" ]]; then
 fi
 ```
 
-DB checks run in both quick and full modes for local targets (they take <10s and finding "MySQL has no root password" is critical). For remote targets: DB checks are never added (they can't connect). This keeps estimates and dashboard accurate — no "check-mysql: can't connect" noise on remote scans.
+DB checks run in **full mode only** for local targets where the service is actually active. The scan script gates on `[[ "${SECFORGE_TARGET_HOST}" == "this_server" ]] && systemctl is-active --quiet mysql` (or `mariadb`). For remote targets: DB checks are never added (they can't connect). This keeps estimates and dashboard accurate — no "check-mysql: can't connect" noise on remote scans, and no failed runs when MySQL isn't installed locally.
+
+**Note:** Quick mode focuses on remote-target reconnaissance and skips local-only DB checks. Run `secforge scan this_server --full` to include them.
 
 ### Canonical tool IDs
 
@@ -130,7 +132,7 @@ All 5 knobs are active from day one — no phased rollout. Three are **enforced 
    - **Quick scan:** nuclei runs with `-tags <boost>` (filtered, fast — only stack-relevant templates). E.g., `-tags nodejs,express` runs ~200 templates instead of 9000.
    - **Full scan:** nuclei runs unfiltered (all templates) but with `-etags <skip>` to exclude obviously irrelevant stacks. E.g., `-etags wordpress,php,java` saves time without losing relevant coverage.
    - **No stack / low confidence:** nuclei runs fully unfiltered (today's behavior).
-3. **Endpoint probes** (`common_endpoints`) — **recon-only**, no new findings. Scan scripts probe these paths and record `{path, http_code, time_ms}` into `webapp/builtin.json` for AI context. The AI reads this to understand the target surface ("your /api/ is publicly accessible, /graphql returned 404"). Does NOT create findings — the existing nuclei + ffuf + builtin parser already handle discovery findings. Keeps us out of `scripts/secforge/*.py`.
+3. **Endpoint hints** (`common_endpoints`) — **AI-consumed metadata**, no new findings. Preflight exports `SECFORGE_COMMON_ENDPOINTS` (CSV) and writes the list into `preflight.json` under the active profile's recon hints. The AI reads this to understand the target surface ("your stack profile suggests checking `/api/`, `/graphql`, `/.env`, `/.git/HEAD`") and can ask `nuclei` or `ffuf` to probe those paths. Scan scripts do NOT probe `common_endpoints` directly — the existing nuclei + ffuf + builtin parsers handle their own discovery. Keeps us out of `scripts/secforge/*.py`.
 
 **AI-consumed (data in profiles.json, no Python module changes):**
 4. **Priority boosts** (`priority_boosts`) — the AI reads these and explains scoring context: "I'm prioritizing secrets findings for your Node.js stack because package.json often contains sensitive config." The scoring engine itself stays unchanged — the existing 7-factor scoring already produces good results. Boosts are AI guidance, not code multipliers.
