@@ -35,7 +35,22 @@ sf_cleanup_bg() {
 
   rm -f "${_SF_LOCK:-}"
 
-  # Write partial manifest on early exit (Ctrl+C, crash, etc.)
+  # Handle interactsh fallback FIRST (before manifest) — record failure + duration
+  if [[ -n "${INTERACTSH_PID:-}" ]] && [[ "${_INTERACTSH_RECORDED:-0}" != "1" ]]; then
+    # Compute duration BEFORE kill (sf_kill_pid sleeps + escalates, would pad duration)
+    local _interactsh_cleanup_dur=0
+    if [[ -n "${_INTERACTSH_START_TS:-}" ]] && [[ "${_INTERACTSH_START_TS}" -gt 0 ]]; then
+      _interactsh_cleanup_dur=$(( $(date +%s) - _INTERACTSH_START_TS ))
+    fi
+    sf_kill_pid "${INTERACTSH_PID}"
+    _SF_TOOLS_FAILED+=("interactsh")
+    _SF_TOOL_DURATIONS+=("interactsh:${_interactsh_cleanup_dur}")
+    sf_emit_dashboard_event "{\"event\":\"tool_fail\",\"tool\":\"interactsh\",\"index\":${_INTERACTSH_INDEX:-0},\"error\":\"interrupted\"}"
+    INTERACTSH_PID=""
+    _INTERACTSH_RECORDED=1
+  fi
+
+  # Write partial manifest on early exit (now includes interactsh in tools_failed + duration)
   if [[ -n "${SECFORGE_SESSION_DIR:-}" ]] && [[ ! -f "${SECFORGE_SESSION_DIR:-}/scan_manifest.json" ]]; then
     SF_MANIFEST_TOOLS_RUN="$(IFS=,; echo "${_SF_TOOLS_RUN[*]:-}")" \
     SF_MANIFEST_TOOLS_FAILED="$(IFS=,; echo "${_SF_TOOLS_FAILED[*]:-}")" \
@@ -47,10 +62,6 @@ sf_cleanup_bg() {
 
   if [[ "${ZAP_STARTED}" == "1" && -n "${ZAP_API_BASE}" ]] && command -v curl >/dev/null 2>&1; then
     curl -fsS "${ZAP_API_BASE}/JSON/core/action/shutdown/" >/dev/null 2>&1 || true
-  fi
-
-  if [[ -n "${INTERACTSH_PID:-}" ]] && [[ "${_INTERACTSH_RECORDED:-0}" != "1" ]]; then
-    sf_emit_dashboard_event "{\"event\":\"tool_fail\",\"tool\":\"interactsh\",\"index\":${_INTERACTSH_INDEX:-0},\"error\":\"interrupted\"}"
   fi
 
   sf_kill_pid "${INTERACTSH_PID}"
