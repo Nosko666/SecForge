@@ -482,6 +482,9 @@ except (ValueError, TypeError):
 
 detected_profile_name = ""
 detect_confidence = "none"
+_detection_score = 0
+_detection_threshold = 2
+_detection_signals = []
 
 if STACK:
     # Explicit --stack flag: use directly
@@ -561,10 +564,6 @@ if not detected_profile_name:
             profile_signals[pname] = signal_list
 
     # Confidence gating (with rich detection metadata)
-    _detection_score = 0
-    _detection_threshold = 2
-    _detection_signals = []
-
     if profile_scores:
         max_score = max(profile_scores.values())
         winners = [p for p, s in profile_scores.items() if s == max_score]
