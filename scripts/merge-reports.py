@@ -2007,6 +2007,9 @@ def write_findings_json(session_dir: Path, tools_run: Set[str], findings: List[F
     scan_date = str(preflight.get("timestamp_utc") or preflight.get("timestamp") or "") or utc_now_iso()
     target = str(preflight.get("target_host") or preflight.get("target_input") or "")
     profile = str(preflight.get("profile") or "")
+    if not profile:
+        sd = preflight.get("stack_detection") or {}
+        profile = str(sd.get("profile") or "")
 
     sorted_findings = sort_findings(findings)
     summary = compute_summary(sorted_findings)
@@ -2097,6 +2100,9 @@ def _run_v2_pipeline(session_dir: Path) -> Optional[Path]:
         target_url = str(preflight.get("target_url") or "")
         scan_date = str(preflight.get("timestamp_utc") or "") or v2_utc_now()
         profile = str(preflight.get("profile") or "")
+        if not profile:
+            _sd = preflight.get("stack_detection") or {}
+            profile = str(_sd.get("profile") or "")
         session_id = session_dir.name
 
         # 2. Parse all tool outputs

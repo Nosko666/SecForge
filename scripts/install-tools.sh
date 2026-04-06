@@ -637,11 +637,13 @@ install_single_tool() {
 
   if [[ "${status}" == "unknown" ]]; then
     sf_warn "Unknown tool: ${tool_id}"
+    sf_emit_dashboard_event "{\"event\":\"install_done\",\"tool\":\"${tool_id}\",\"status\":\"unknown\",\"duration\":0}"
     return 1
   fi
 
   if [[ "${status}" == "installed" || "${status}" == "builtin" ]]; then
     sf_log "${tool_id}: already installed."
+    sf_emit_dashboard_event "{\"event\":\"install_done\",\"tool\":\"${tool_id}\",\"status\":\"skipped\",\"duration\":0}"
     return 0
   fi
 
