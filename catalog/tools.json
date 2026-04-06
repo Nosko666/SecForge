@@ -1,0 +1,598 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "description": "Per-tool metadata. Single source of truth for: dashboard descriptions, preflight tier gating, cost estimator defaults, installer methods, installedness checks."
+  },
+  "aide": {
+    "title": "AIDE",
+    "description": "Filesystem integrity checker for detecting unexpected changes on disk",
+    "tier": 1,
+    "est_seconds": 120,
+    "est_disk_mb": 20,
+    "install_method": "apt",
+    "apt_packages": ["aide"],
+    "check": { "command": "aide" }
+  },
+  "apkhunt": {
+    "title": "APKHunt",
+    "description": "Scans Android APKs for risky patterns and potential vulnerabilities",
+    "tier": 1,
+    "est_seconds": 60,
+    "est_disk_mb": 30,
+    "install_method": "custom",
+    "custom_function": "install_apkhunt",
+    "check": { "command": "apkhunt" }
+  },
+  "apkdeeplens": {
+    "title": "APKDeepLens",
+    "description": "Static APK analyzer for permissions, risks, and embedded secrets",
+    "tier": 1,
+    "est_seconds": 60,
+    "est_disk_mb": 25,
+    "install_method": "custom",
+    "custom_function": "install_apkdeeplens",
+    "check": { "command": "apkdeeplens" }
+  },
+  "apkleaks": {
+    "title": "APKLeaks",
+    "description": "Finds secrets in Android APKs (requires jadx to decompile)",
+    "tier": 1,
+    "est_seconds": 120,
+    "est_disk_mb": 20,
+    "install_method": "pip_venv",
+    "pip_package": "apkleaks",
+    "depends_on": ["jadx"],
+    "check": { "command": "apkleaks" }
+  },
+  "aureport": {
+    "title": "Audit Report (aureport)",
+    "description": "Summarizes Linux audit logs to spot suspicious activity and policy gaps",
+    "tier": 1,
+    "est_seconds": 10,
+    "est_disk_mb": 1,
+    "install_method": "apt",
+    "apt_packages": ["auditd"],
+    "check": { "command": "aureport" }
+  },
+  "check-email-dns": {
+    "title": "Email/DNS Security Checks",
+    "description": "Checks SPF, DMARC, DKIM, DNSSEC records for your domain",
+    "tier": 1,
+    "est_seconds": 10,
+    "est_disk_mb": 0,
+    "install_method": "builtin",
+    "check": { "path": "scripts/check-email-dns.sh" },
+    "requires_commands": ["dig"]
+  },
+  "check-mysql": {
+    "title": "MySQL Security Checks",
+    "description": "Checks MySQL for anonymous accounts, remote root, weak auth, and risky config",
+    "tier": 1,
+    "est_seconds": 5,
+    "est_disk_mb": 0,
+    "install_method": "builtin",
+    "check": { "path": "scripts/check-mysql.sh" },
+    "requires_commands": ["mysql"]
+  },
+  "checkov": {
+    "title": "Checkov",
+    "description": "IaC scanner for Terraform/Kubernetes and cloud misconfigurations",
+    "tier": 1,
+    "est_seconds": 90,
+    "est_disk_mb": 120,
+    "install_method": "pip_venv",
+    "pip_package": "checkov",
+    "check": { "command": "checkov" }
+  },
+  "clamscan": {
+    "title": "ClamAV (clamscan)",
+    "description": "Malware scan for local filesystem (best-effort hardening signal)",
+    "tier": 1,
+    "est_seconds": 600,
+    "est_disk_mb": 200,
+    "install_method": "apt",
+    "apt_packages": ["clamav", "clamav-freshclam"],
+    "check": { "command": "clamscan" }
+  },
+  "commix": {
+    "title": "Commix",
+    "description": "Command injection testing (active payloads) against web endpoints",
+    "tier": 2,
+    "est_seconds": 180,
+    "est_disk_mb": 30,
+    "install_method": "custom",
+    "custom_function": "install_commix",
+    "check": { "command": "commix" }
+  },
+  "corscanner": {
+    "title": "CORScanner",
+    "description": "CORS misconfiguration scanner for web apps and APIs",
+    "tier": 1,
+    "est_seconds": 30,
+    "est_disk_mb": 25,
+    "install_method": "custom",
+    "custom_function": "install_corscanner",
+    "check": { "command": "corscanner" }
+  },
+  "dalfox": {
+    "title": "Dalfox",
+    "description": "XSS scanner (active payloads) for reflected/stored XSS detection",
+    "tier": 2,
+    "est_seconds": 180,
+    "est_disk_mb": 10,
+    "install_method": "github_release",
+    "repo": "hahwul/dalfox",
+    "expected_binary": "dalfox",
+    "check": { "command": "dalfox" }
+  },
+  "debsums": {
+    "title": "Debsums",
+    "description": "Verifies installed Debian package checksums to detect tampering",
+    "tier": 1,
+    "est_seconds": 120,
+    "est_disk_mb": 2,
+    "install_method": "apt",
+    "apt_packages": ["debsums"],
+    "check": { "command": "debsums" }
+  },
+  "dnsrecon": {
+    "title": "DNSRecon",
+    "description": "DNS enumeration tool for zone transfers, brute force, and record discovery",
+    "tier": 1,
+    "est_seconds": 60,
+    "est_disk_mb": 15,
+    "install_method": "pip_venv",
+    "pip_package": "dnsrecon",
+    "check": { "command": "dnsrecon" },
+    "requires_commands": ["dig"]
+  },
+  "fail2ban": {
+    "title": "Fail2ban",
+    "description": "Brute-force protection service (not a scanner, but key hardening control)",
+    "tier": 1,
+    "est_seconds": 0,
+    "est_disk_mb": 5,
+    "install_method": "apt",
+    "apt_packages": ["fail2ban"],
+    "check": { "command": "fail2ban-client" }
+  },
+  "ffuf": {
+    "title": "ffuf",
+    "description": "Directory and endpoint discovery by fuzzing common paths",
+    "tier": 1,
+    "est_seconds": 45,
+    "est_disk_mb": 10,
+    "install_method": "github_release",
+    "repo": "ffuf/ffuf",
+    "expected_binary": "ffuf",
+    "depends_on": ["wordlists"],
+    "check": { "command": "ffuf" }
+  },
+  "gitleaks": {
+    "title": "Gitleaks",
+    "description": "Detects secrets in git repos and source trees (high signal, safe)",
+    "tier": 1,
+    "est_seconds": 60,
+    "est_disk_mb": 15,
+    "install_method": "github_release",
+    "repo": "gitleaks/gitleaks",
+    "expected_binary": "gitleaks",
+    "check": { "command": "gitleaks" }
+  },
+  "hashcat": {
+    "title": "Hashcat",
+    "description": "Offline password cracking (requires explicit user intent; not used in scans)",
+    "tier": 1,
+    "est_seconds": 0,
+    "est_disk_mb": 200,
+    "install_method": "apt",
+    "apt_packages": ["hashcat"],
+    "check": { "command": "hashcat" }
+  },
+  "httpx": {
+    "title": "httpx",
+    "description": "Fast HTTP probe for discovered subdomains and services",
+    "tier": 1,
+    "est_seconds": 45,
+    "est_disk_mb": 10,
+    "install_method": "github_release",
+    "repo": "projectdiscovery/httpx",
+    "expected_binary": "httpx",
+    "check": { "command": "httpx" }
+  },
+  "hydra": {
+    "title": "Hydra",
+    "description": "Credential testing (active) against network services like SSH",
+    "tier": 2,
+    "est_seconds": 120,
+    "est_disk_mb": 5,
+    "install_method": "apt",
+    "apt_packages": ["hydra"],
+    "check": { "command": "hydra" }
+  },
+  "interactsh": {
+    "title": "Interactsh (client)",
+    "description": "Out-of-band callback listener for blind SSRF/XSS/injection detection",
+    "tier": 1,
+    "est_seconds": 0,
+    "est_disk_mb": 8,
+    "install_method": "github_release",
+    "repo": "projectdiscovery/interactsh",
+    "expected_binary": "interactsh-client",
+    "check": { "command": "interactsh-client" }
+  },
+  "jadx": {
+    "title": "jadx",
+    "description": "Android decompiler used for APK analysis and secret extraction",
+    "tier": 0,
+    "est_seconds": 0,
+    "est_disk_mb": 80,
+    "install_method": "custom",
+    "custom_function": "install_jadx",
+    "check": { "command": "jadx" }
+  },
+  "john": {
+    "title": "John the Ripper",
+    "description": "Offline password cracking (requires explicit user intent; not used in scans)",
+    "tier": 1,
+    "est_seconds": 0,
+    "est_disk_mb": 30,
+    "install_method": "apt",
+    "apt_packages": ["john"],
+    "check": { "command": "john" }
+  },
+  "jwt_tool": {
+    "title": "jwt_tool",
+    "description": "JWT attack/analysis helper for testing token weaknesses",
+    "tier": 1,
+    "est_seconds": 0,
+    "est_disk_mb": 30,
+    "install_method": "custom",
+    "custom_function": "install_jwt_tool",
+    "check": { "command": "jwt_tool" }
+  },
+  "kiterunner": {
+    "title": "Kiterunner (kr)",
+    "description": "Discovers API routes using wordlists and endpoint patterns",
+    "tier": 1,
+    "est_seconds": 120,
+    "est_disk_mb": 25,
+    "install_method": "github_release",
+    "repo": "assetnote/kiterunner",
+    "expected_binary": "kr",
+    "check": { "command": "kr" }
+  },
+  "lynis": {
+    "title": "Lynis",
+    "description": "Local hardening audit for Linux servers (safe, high signal)",
+    "tier": 1,
+    "est_seconds": 120,
+    "est_disk_mb": 15,
+    "install_method": "git_clone",
+    "repo": "CISOfy/lynis",
+    "dest_path": "tools/lynis",
+    "expected_binary": "lynis",
+    "check": { "command": "lynis" }
+  },
+  "masscan": {
+    "title": "Masscan",
+    "description": "High-speed port scanner (can require root; use cautiously on production)",
+    "tier": 1,
+    "est_seconds": 60,
+    "est_disk_mb": 2,
+    "install_method": "apt",
+    "apt_packages": ["masscan"],
+    "check": { "command": "masscan" }
+  },
+  "netcat": {
+    "title": "netcat (nc)",
+    "description": "Low-level network utility for connectivity and service probing",
+    "tier": 1,
+    "est_seconds": 0,
+    "est_disk_mb": 1,
+    "install_method": "apt",
+    "apt_packages": ["netcat-openbsd"],
+    "check": { "command": "nc" }
+  },
+  "netexec": {
+    "title": "NetExec (nxc)",
+    "description": "Credential testing and enumeration (active) for network services",
+    "tier": 2,
+    "est_seconds": 120,
+    "est_disk_mb": 80,
+    "install_method": "custom",
+    "custom_function": "install_netexec",
+    "check": { "command": "nxc" }
+  },
+  "nikto": {
+    "title": "Nikto",
+    "description": "Web server misconfiguration scanner (moderately noisy, but useful)",
+    "tier": 1,
+    "est_seconds": 120,
+    "est_disk_mb": 20,
+    "install_method": "apt",
+    "apt_packages": ["nikto", "ruby"],
+    "check": { "command": "nikto" }
+  },
+  "nmap": {
+    "title": "Nmap",
+    "description": "Discovers what ports and services are exposed to the internet",
+    "tier": 1,
+    "est_seconds": 60,
+    "est_disk_mb": 2,
+    "install_method": "apt",
+    "apt_packages": ["nmap"],
+    "check": { "command": "nmap" }
+  },
+  "nuclei": {
+    "title": "Nuclei",
+    "description": "Template-based vulnerability scanner for known issues and misconfigurations",
+    "tier": 1,
+    "est_seconds": 90,
+    "est_disk_mb": 45,
+    "install_method": "github_release",
+    "repo": "projectdiscovery/nuclei",
+    "expected_binary": "nuclei",
+    "depends_on": ["nuclei-templates"],
+    "check": { "command": "nuclei" }
+  },
+  "nuclei-templates": {
+    "title": "Nuclei Templates",
+    "description": "Template library for Nuclei (required for meaningful Nuclei scans)",
+    "tier": 0,
+    "est_seconds": 0,
+    "est_disk_mb": 500,
+    "install_method": "git_clone",
+    "repo": "projectdiscovery/nuclei-templates",
+    "dest_path": "tools/nuclei-templates",
+    "check": { "path": "tools/nuclei-templates" }
+  },
+  "observatory": {
+    "title": "Mozilla Observatory CLI",
+    "description": "Header/TLS analysis against a URL (useful for quick hardening feedback)",
+    "tier": 1,
+    "est_seconds": 45,
+    "est_disk_mb": 60,
+    "install_method": "npm_local",
+    "npm_package": "observatory-cli",
+    "dest_path": "tools/observatory-cli",
+    "check": { "command": "observatory" }
+  },
+  "oscap": {
+    "title": "OpenSCAP (oscap)",
+    "description": "Compliance scanning tool for system baseline checks",
+    "tier": 1,
+    "est_seconds": 180,
+    "est_disk_mb": 50,
+    "install_method": "apt",
+    "apt_packages": ["openscap-scanner", "openscap-utils"],
+    "check": { "command": "oscap" }
+  },
+  "osv-scanner": {
+    "title": "OSV-Scanner",
+    "description": "Finds vulnerable dependencies across many ecosystems (safe)",
+    "tier": 1,
+    "est_seconds": 60,
+    "est_disk_mb": 20,
+    "install_method": "github_release",
+    "repo": "google/osv-scanner",
+    "expected_binary": "osv-scanner",
+    "check": { "command": "osv-scanner" }
+  },
+  "pip-audit": {
+    "title": "pip-audit",
+    "description": "Audits Python dependencies for known vulnerabilities (safe)",
+    "tier": 1,
+    "est_seconds": 30,
+    "est_disk_mb": 10,
+    "install_method": "pip_venv",
+    "pip_package": "pip-audit",
+    "check": { "command": "pip-audit" }
+  },
+  "prowler": {
+    "title": "Prowler",
+    "description": "Cloud security scanner for AWS best practices (optional)",
+    "tier": 1,
+    "est_seconds": 300,
+    "est_disk_mb": 80,
+    "install_method": "pip_venv",
+    "pip_package": "prowler",
+    "check": { "command": "prowler" }
+  },
+  "rkhunter": {
+    "title": "rkhunter",
+    "description": "Rootkit scanner for local server compromise signals (best-effort)",
+    "tier": 1,
+    "est_seconds": 300,
+    "est_disk_mb": 15,
+    "install_method": "apt",
+    "apt_packages": ["rkhunter"],
+    "check": { "command": "rkhunter" }
+  },
+  "secforge-builtin": {
+    "title": "SecForge Built-in Checks",
+    "description": "Checks for exposed files (.env, .git), missing headers, cookie flags, dangerous HTTP methods",
+    "tier": 1,
+    "est_seconds": 10,
+    "est_disk_mb": 0,
+    "install_method": "builtin",
+    "check": { "path": "scripts/scan-quick.sh" }
+  },
+  "sqlmap": {
+    "title": "SQLMap",
+    "description": "SQL injection testing (active payloads) to find database vulnerabilities",
+    "tier": 2,
+    "est_seconds": 300,
+    "est_disk_mb": 15,
+    "install_method": "pip_venv",
+    "pip_package": "sqlmap",
+    "check": { "command": "sqlmap" }
+  },
+  "sslscan": {
+    "title": "sslscan",
+    "description": "TLS cipher and certificate scanner for a host:port",
+    "tier": 1,
+    "est_seconds": 30,
+    "est_disk_mb": 3,
+    "install_method": "apt",
+    "apt_packages": ["sslscan"],
+    "check": { "command": "sslscan" }
+  },
+  "ssh-audit": {
+    "title": "ssh-audit",
+    "description": "Checks SSH server configuration and crypto settings (safe)",
+    "tier": 1,
+    "est_seconds": 15,
+    "est_disk_mb": 5,
+    "install_method": "pip_venv",
+    "pip_package": "ssh-audit",
+    "check": { "command": "ssh-audit" }
+  },
+  "stripe-check": {
+    "title": "Stripe/Payment Page Checks",
+    "description": "PCI-ish checks for payment pages (HTTPS enforcement, CSP, third-party scripts)",
+    "tier": 1,
+    "est_seconds": 30,
+    "est_disk_mb": 5,
+    "install_method": "custom",
+    "custom_function": "install_stripe_check",
+    "check": { "command": "stripe-check" }
+  },
+  "subfinder": {
+    "title": "Subfinder",
+    "description": "Finds subdomains to expand the attack surface (safe)",
+    "tier": 1,
+    "est_seconds": 45,
+    "est_disk_mb": 10,
+    "install_method": "github_release",
+    "repo": "projectdiscovery/subfinder",
+    "expected_binary": "subfinder",
+    "check": { "command": "subfinder" }
+  },
+  "systemd-analyze": {
+    "title": "systemd-analyze",
+    "description": "Local system hardening checks via systemd security analysis",
+    "tier": 1,
+    "est_seconds": 10,
+    "est_disk_mb": 0,
+    "install_method": "builtin",
+    "check": { "command": "systemd-analyze" }
+  },
+  "testssl": {
+    "title": "testssl.sh",
+    "description": "Checks your SSL certificate and TLS encryption settings",
+    "tier": 1,
+    "est_seconds": 30,
+    "est_disk_mb": 5,
+    "install_method": "git_clone",
+    "repo": "drwetter/testssl.sh",
+    "dest_path": "tools/testssl",
+    "expected_binary": "testssl.sh",
+    "check": { "command": "testssl.sh" }
+  },
+  "trivy": {
+    "title": "Trivy",
+    "description": "Scans OS packages and files for known vulnerabilities (local rootfs scan)",
+    "tier": 1,
+    "est_seconds": 120,
+    "est_disk_mb": 50,
+    "install_method": "github_release",
+    "repo": "aquasecurity/trivy",
+    "expected_binary": "trivy",
+    "check": { "command": "trivy" }
+  },
+  "trufflehog": {
+    "title": "TruffleHog",
+    "description": "Finds secrets in code and filesystems (safe)",
+    "tier": 1,
+    "est_seconds": 90,
+    "est_disk_mb": 15,
+    "install_method": "github_release",
+    "repo": "trufflesecurity/trufflehog",
+    "expected_binary": "trufflehog",
+    "check": { "command": "trufflehog" }
+  },
+  "ufw": {
+    "title": "UFW",
+    "description": "Firewall management helper (used by verification/hardening checks)",
+    "tier": 1,
+    "est_seconds": 0,
+    "est_disk_mb": 2,
+    "install_method": "apt",
+    "apt_packages": ["ufw"],
+    "check": { "command": "ufw" }
+  },
+  "vulnapi": {
+    "title": "VulnAPI",
+    "description": "API vulnerability scanner for known issues in API endpoints",
+    "tier": 1,
+    "est_seconds": 120,
+    "est_disk_mb": 20,
+    "install_method": "github_release",
+    "repo": "cerberauth/vulnapi",
+    "expected_binary": "vulnapi",
+    "check": { "command": "vulnapi" }
+  },
+  "wafw00f": {
+    "title": "wafw00f",
+    "description": "Detects whether a Web Application Firewall is protecting your site",
+    "tier": 1,
+    "est_seconds": 5,
+    "est_disk_mb": 3,
+    "install_method": "pip_venv",
+    "pip_package": "wafw00f",
+    "check": { "command": "wafw00f" }
+  },
+  "wapiti": {
+    "title": "Wapiti",
+    "description": "Web vulnerability scanner (active) for common web flaws",
+    "tier": 2,
+    "est_seconds": 300,
+    "est_disk_mb": 30,
+    "install_method": "apt",
+    "apt_packages": ["wapiti"],
+    "check": { "command": "wapiti" }
+  },
+  "whatweb": {
+    "title": "WhatWeb",
+    "description": "Identifies web technologies and server banners (safe)",
+    "tier": 1,
+    "est_seconds": 10,
+    "est_disk_mb": 25,
+    "install_method": "git_clone",
+    "repo": "urbanadventurer/WhatWeb",
+    "dest_path": "tools/whatweb",
+    "expected_binary": "whatweb",
+    "check": { "command": "whatweb" }
+  },
+  "wordlists": {
+    "title": "SecLists Subset",
+    "description": "Curated wordlists for directory and password fuzzing",
+    "tier": 0,
+    "est_seconds": 0,
+    "est_disk_mb": 50,
+    "install_method": "custom",
+    "custom_function": "install_wordlists",
+    "check": { "path": "wordlists/directories.txt" }
+  },
+  "xsstrike": {
+    "title": "XSStrike",
+    "description": "XSS scanner (active) using payload generation and crawling",
+    "tier": 2,
+    "est_seconds": 180,
+    "est_disk_mb": 40,
+    "install_method": "custom",
+    "custom_function": "install_xsstrike",
+    "check": { "command": "xsstrike" }
+  },
+  "zap": {
+    "title": "OWASP ZAP",
+    "description": "Active web scanner — sends many payloads to discover vulnerabilities",
+    "tier": 2,
+    "est_seconds": 600,
+    "est_disk_mb": 500,
+    "install_method": "custom",
+    "custom_function": "install_zap",
+    "check": { "command": "zap.sh" }
+  }
+}
