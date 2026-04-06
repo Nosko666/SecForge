@@ -52,7 +52,7 @@ Reporting:
     --session <session_id>     Use specific scan session
     --out <path>               Write to file instead of stdout
     --system <info>            System/OS context for fix generation
-    --stack <hints>            Tech stack hints (e.g. "nginx, node")
+    --stack-hints <hints>      Tech stack hints (e.g. "nginx, node"); --stack accepted as alias
     --inspect                  Probe local config files for precise fix locations
 
 Verification:
