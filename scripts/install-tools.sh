@@ -884,6 +884,8 @@ PY
     status="$(check_tool_status "${tool_id}")"
     if [[ "${status}" == "installed" ]]; then
       skipped=$((skipped + 1))
+      # Emit install_done so dashboard count reaches tools_total
+      sf_emit_dashboard_event "{\"event\":\"install_done\",\"tool\":\"${tool_id}\",\"status\":\"skipped\",\"duration\":0}"
       continue
     fi
     if install_single_tool "${tool_id}"; then

@@ -110,7 +110,7 @@ for ev in events:
     elif e=="install_done":
         nm=ev.get("tool",""); s2=ev.get("status","ok"); d=ev.get("duration",0)
         itools.append({"n":nm,"s":s2,"d":d})
-        if itot>0 and len(itools)>=itot and all(t["s"] in ("ok","fail") for t in itools):
+        if itot>0 and len(itools)>=itot and all(t["s"] in ("ok","fail","skipped","unknown","manual") for t in itools):
             st="install_complete"
     elif e=="verify_start": st="verifying"; vpk=ev.get("pack",""); vtot=ev.get("checks_total",0)
     elif e=="verify_done":
@@ -202,6 +202,12 @@ _tool_line() {
       printf '  %s●%s %-20s %s...running%s\n' "${_CYN}" "${_R}" "${name}" "${_D}" "${_R}" ;;
     installing)
       printf '  %s●%s %-20s %s...installing%s\n' "${_CYN}" "${_R}" "${name}" "${_D}" "${_R}" ;;
+    skipped)
+      printf '  %s-%s %-20s %s(already installed)%s\n' "${_D}" "${_R}" "${name}" "${_D}" "${_R}" ;;
+    unknown)
+      printf '  %s?%s %-20s %s(unknown tool)%s\n' "${_YEL}" "${_R}" "${name}" "${_D}" "${_R}" ;;
+    manual)
+      printf '  %s!%s %-20s %s(manual install required)%s\n' "${_YEL}" "${_R}" "${name}" "${_D}" "${_R}" ;;
     *)
       printf '  %s○%s %s\n' "${_D}" "${_R}" "${name}" ;;
   esac
