@@ -773,7 +773,7 @@ def _int_or_none(s):
 preflight_path = os.environ.get("SF_PREFLIGHT_PATH", "")
 if preflight_path:
     preflight_data = {
-        "timestamp_utc": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "timestamp_utc": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "target_input": os.environ.get("SF_TARGET_INPUT", ""),
         "target_kind": os.environ.get("SF_TARGET_KIND", "url"),
         "target_url": TARGET_URL,

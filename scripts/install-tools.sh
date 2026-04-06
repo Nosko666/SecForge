@@ -779,18 +779,18 @@ install_single_tool() {
       ;;
 
     custom)
-      sf_log "${tool_id}: requires manual installation."
-      if [[ -n "${TOOL_INSTRUCTIONS}" ]]; then
-        sf_log "  Instructions: ${TOOL_INSTRUCTIONS}"
-      fi
       if [[ -n "${TOOL_CUSTOM_FUNCTION}" ]]; then
-        sf_log "  Custom function: ${TOOL_CUSTOM_FUNCTION}"
-        # Check if the function exists in the current shell
         if declare -f "${TOOL_CUSTOM_FUNCTION}" >/dev/null 2>&1; then
+          sf_log "${tool_id}: running custom installer (${TOOL_CUSTOM_FUNCTION})..."
           "${TOOL_CUSTOM_FUNCTION}"
         else
           sf_warn "Custom install function '${TOOL_CUSTOM_FUNCTION}' not found. Skipping."
           return 1
+        fi
+      else
+        sf_log "${tool_id}: requires manual installation."
+        if [[ -n "${TOOL_INSTRUCTIONS}" ]]; then
+          sf_log "  Instructions: ${TOOL_INSTRUCTIONS}"
         fi
       fi
       ;;

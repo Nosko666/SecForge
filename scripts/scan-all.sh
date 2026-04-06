@@ -19,6 +19,7 @@ INTERACTSH_PID=""
 ZAP_PID=""
 ZAP_API_BASE=""
 ZAP_STARTED="0"
+_SF_PF_TMP=""
 
 sf_kill_pid() {
   local pid="${1:-}"
@@ -34,6 +35,7 @@ sf_cleanup_bg() {
   set +e
 
   rm -f "${_SF_LOCK:-}"
+  rm -f "${_SF_PF_TMP:-}"
 
   # Handle interactsh fallback FIRST (before manifest) — record failure + duration
   if [[ -n "${INTERACTSH_PID:-}" ]] && [[ "${_INTERACTSH_RECORDED:-0}" != "1" ]]; then
@@ -64,7 +66,7 @@ sf_cleanup_bg() {
     curl -fsS "${ZAP_API_BASE}/JSON/core/action/shutdown/" >/dev/null 2>&1 || true
   fi
 
-  sf_kill_pid "${INTERACTSH_PID}"
+  # INTERACTSH_PID already killed in fallback block above (cleared to "")
   sf_kill_pid "${ZAP_PID}"
 }
 
@@ -145,7 +147,7 @@ sf_track_run() {
 
 sf_write_manifest() {
   local session_dir="$1"
-  local scan_mode="${2:-all}"
+  local scan_mode="${2:-full}"
   local scan_date
   scan_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   python3 - "${session_dir}" "${scan_mode}" "${scan_date}" <<'PYEOF'
@@ -349,8 +351,8 @@ main() {
   fi
 
   # Preflight exports session vars (safe: tempfile, not process substitution).
-  local _pf_tmp
-  _pf_tmp="$(mktemp /tmp/secforge-preflight.XXXXXX)"
+  _SF_PF_TMP="$(mktemp /tmp/secforge-preflight.XXXXXX)"
+  local _pf_tmp="${_SF_PF_TMP}"
   # Forward CLI flags to preflight (set as env vars by bin/secforge)
   local _pf_args=(--target "${target}" --scan-mode full --require-tools "curl,jq")
   [[ -n "${SECFORGE_STACK:-}" ]] && _pf_args+=(--stack "${SECFORGE_STACK}")
@@ -381,7 +383,7 @@ main() {
   export SECFORGE_DASHBOARD_STATUS
   ln -sf "${SECFORGE_DASHBOARD_STATUS}" /tmp/secforge-dashboard-latest.status 2>/dev/null || true
 
-  sf_emit_dashboard_event "{\"event\":\"scan_start\",\"target\":\"${SECFORGE_TARGET_HOST}\",\"profile\":\"${SECFORGE_STACK_PROFILE:-}\",\"scan_mode\":\"${SECFORGE_SCAN_MODE:-all}\",\"tools_total\":${SECFORGE_EST_TOOLS_TOTAL:-0},\"est_seconds\":${SECFORGE_EST_SECONDS:-0}}"
+  sf_emit_dashboard_event "{\"event\":\"scan_start\",\"target\":\"${SECFORGE_TARGET_HOST}\",\"profile\":\"${SECFORGE_STACK_PROFILE:-}\",\"scan_mode\":\"${SECFORGE_SCAN_MODE:-full}\",\"tools_total\":${SECFORGE_EST_TOOLS_TOTAL:-0},\"est_seconds\":${SECFORGE_EST_SECONDS:-0}}"
 
   local timeout_web timeout_portscan timeout_hardening timeout_zap delay_ms threshold cooldown
   timeout_web="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "TIMEOUT_WEB_SECONDS" || true)"
@@ -553,17 +555,21 @@ main() {
       elif [[ "${sudo_policy}" == "never" ]]; then
         sf_warn "Skipping masscan (requires root; ALLOW_SUDO_TOOLS=never)."
         _SF_TOOLS_FAILED+=("masscan")
+        local _masscan_skipped=1
       else
         if sf_ask_tty_yes "Masscan needs sudo (raw sockets). Type YES to run it now:" "YES"; then
           sf_run "${timeout_portscan}" "${SECFORGE_SESSION_DIR}/network/masscan.log" sudo "$(sf_tool masscan)" "${SECFORGE_TARGET_HOST}" -p0-65535 --rate=1000 -oJ "${SECFORGE_SESSION_DIR}/network/masscan.json"
         else
           sf_log "Skipping masscan."
           _SF_TOOLS_FAILED+=("masscan")
+          local _masscan_skipped=1
         fi
       fi
       local _masscan_dur=$(( $(date +%s) - _masscan_start ))
       _SF_TOOL_DURATIONS+=("masscan:${_masscan_dur}")
-      if [[ ! -s "${SECFORGE_SESSION_DIR}/network/masscan.json" ]]; then
+      if [[ "${_masscan_skipped:-0}" == "1" ]]; then
+        sf_emit_dashboard_event "{\"event\":\"tool_fail\",\"tool\":\"masscan\",\"index\":${_sf_tool_index},\"error\":\"skipped (no sudo)\"}"
+      elif [[ ! -s "${SECFORGE_SESSION_DIR}/network/masscan.json" ]]; then
         _SF_TOOLS_FAILED+=("masscan")
         sf_emit_dashboard_event "{\"event\":\"tool_fail\",\"tool\":\"masscan\",\"index\":${_sf_tool_index},\"error\":\"empty output\"}"
       else

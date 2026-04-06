@@ -212,7 +212,7 @@ else:
 
   verify)
     exec python3 -c "
-import sys, json
+import sys, json, os
 sys.path.insert(0, '${SCRIPT_DIR}')
 from secforge.export_ai import resolve_session, load_findings
 from secforge.verify import run_verification, write_results, is_safe_command
