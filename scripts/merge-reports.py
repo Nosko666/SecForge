@@ -2009,7 +2009,7 @@ def write_findings_json(session_dir: Path, tools_run: Set[str], findings: List[F
     profile = str(preflight.get("profile") or "")
     if not profile:
         sd = preflight.get("stack_detection") or {}
-        profile = str(sd.get("profile") or "")
+        profile = str(sd.get("detected_stack") or sd.get("profile") or "")
 
     sorted_findings = sort_findings(findings)
     summary = compute_summary(sorted_findings)

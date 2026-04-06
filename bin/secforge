@@ -87,6 +87,7 @@ Setup:
     --environment prod|staging Set environment type
     --payments yes|no          Enable payment security checks
     --admin-ip <ip>            Whitelist admin IP for hardening
+    --tier 1|2                 Set max scanning tier (1=passive, 2=active)
     --reset                    Reset config from template (with backup)
   install <tool> [tool...]     Install security tools from catalog
   install --list               Show all available tools
@@ -599,15 +600,16 @@ state.close()
 
   init)
     # Parse flags
-    _sf_domains=(); _sf_env=""; _sf_payments=""; _sf_admin_ip=""; _sf_reset=0
+    _sf_domains=(); _sf_env=""; _sf_payments=""; _sf_admin_ip=""; _sf_tier=""; _sf_reset=0
     while [[ "${#}" -gt 0 ]]; do
       case "$1" in
         --domain) _sf_domains+=("${2:-}"); shift 2 ;;
         --environment) _sf_env="${2:-}"; shift 2 ;;
         --payments) _sf_payments="${2:-}"; shift 2 ;;
         --admin-ip) _sf_admin_ip="${2:-}"; shift 2 ;;
+        --tier) _sf_tier="${2:-}"; shift 2 ;;
         --reset) _sf_reset=1; shift ;;
-        -h|--help) echo "Usage: secforge init [--domain <d>] [--environment prod|staging] [--payments yes|no] [--admin-ip <ip>] [--reset]"; exit 0 ;;
+        -h|--help) echo "Usage: secforge init [--domain <d>] [--environment prod|staging] [--payments yes|no] [--admin-ip <ip>] [--tier 1|2] [--reset]"; exit 0 ;;
         *) sf_die "Unknown init flag: $1" ;;
       esac
     done
@@ -681,6 +683,10 @@ state.close()
       _sf_had_flags=1
       sf_cfg_set_value "${_sf_cfg}" "ADMIN_IP" "${_sf_admin_ip}"
     fi
+    if [[ -n "${_sf_tier}" ]]; then
+      _sf_had_flags=1
+      sf_cfg_set_value "${_sf_cfg}" "TIER_MAX" "${_sf_tier}"
+    fi
 
     if [[ "${_sf_had_flags}" -eq 1 ]]; then
       echo "Config updated: ${_sf_cfg}"
@@ -714,6 +720,18 @@ state.close()
     # Payments
     _sf_pay="$(sf_prompt_tty "Does this site handle payments? (yes/no)" "no")"
     sf_cfg_set_value "${_sf_cfg}" "PAYMENTS" "${_sf_pay}"
+
+    # Tier preference
+    echo ""
+    echo "Scanning tiers:"
+    echo "  1) Tier 1 (recommended): passive/safe checks only"
+    echo "  2) Tier 2: includes active testing (SQLi, XSS payloads). Best for staging."
+    _sf_tier_choice="$(sf_prompt_tty "Max scanning tier?" "1")"
+    if [[ "${_sf_tier_choice}" == "2" ]]; then
+      sf_cfg_set_value "${_sf_cfg}" "TIER_MAX" "2"
+    else
+      sf_cfg_set_value "${_sf_cfg}" "TIER_MAX" "1"
+    fi
 
     # Admin IP
     _sf_auto_ip=""

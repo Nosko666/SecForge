@@ -202,6 +202,24 @@ main() {
   sf_log "Session: ${SECFORGE_SESSION_ID}"
   sf_log "Reports: ${SECFORGE_SESSION_DIR}"
 
+  # Show estimate before starting
+  local _est_tools="${SECFORGE_EST_TOOLS_TOTAL:-0}"
+  local _est_secs="${SECFORGE_EST_SECONDS:-0}"
+  if [[ "${_est_tools}" -gt 0 ]]; then
+    local _est_min=$(( _est_secs / 60 )) _est_rem=$(( _est_secs % 60 ))
+    local _est_display
+    if [[ "${_est_min}" -gt 0 ]]; then
+      _est_display="~${_est_min}m ${_est_rem}s"
+    else
+      _est_display="~${_est_secs}s"
+    fi
+    local _est_qualifier=""
+    if [[ -z "$(find "${SECFORGE_ROOT}/reports" -maxdepth 2 -name 'scan_manifest.json' -path "*${SECFORGE_TARGET_HOST}*" 2>/dev/null | head -1)" ]]; then
+      _est_qualifier=" (first scan — rough estimate)"
+    fi
+    sf_log "${_est_tools} tools, ${_est_display}${_est_qualifier}"
+  fi
+
   # Tier 1 only.
   if [[ "${SECFORGE_TARGET_HOST}" != "this_server" ]]; then
     if sf_should_run_tool "wafw00f" && sf_tool wafw00f >/dev/null 2>&1; then

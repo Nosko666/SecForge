@@ -423,6 +423,25 @@ tools_catalog.pop("_meta", None)
 profiles_catalog.pop("_meta", None)
 
 
+# ── Scan-mode tool sets (what each scan script actually runs) ────────
+
+QUICK_SCAN_TOOLS = {
+    "wafw00f", "whatweb", "nuclei", "nmap", "testssl",
+    "check-email-dns", "secforge-builtin", "lynis", "ssh-audit",
+}
+
+FULL_SCAN_TOOLS = QUICK_SCAN_TOOLS | {
+    "corscanner", "nikto", "ffuf", "observatory", "sslscan",
+    "subfinder", "httpx", "interactsh", "masscan",
+    "trivy", "trufflehog", "gitleaks", "osv-scanner", "pip-audit",
+    "check-mysql", "systemd-analyze", "clamscan", "rkhunter",
+    "aide", "aureport", "debsums",
+    # Tier 2:
+    "zap", "sqlmap", "dalfox", "xsstrike", "commix", "wapiti",
+    "hydra", "netexec",
+}
+
+
 # ── TIER_MAX from config ─────────────────────────────────────────────
 
 def read_config_value(cfg_path, key):
@@ -498,10 +517,13 @@ if not detected_profile_name:
         except Exception:
             pass  # header detection is best-effort
 
-    # Score each profile
-    profile_scores = {}  # profile_name -> signal_count
+    # Score each profile (collect signals for rich stack_detection)
+    profile_scores = {}   # profile_name -> signal_count
+    profile_signals = {}  # profile_name -> list of signal description strings
+
     for pname, pdata in profiles_catalog.items():
         signals = 0
+        signal_list = []
 
         # Check detect_headers (case-insensitive contains)
         detect_hdrs = pdata.get("detect_headers", {})
@@ -509,10 +531,11 @@ if not detected_profile_name:
             hdr_name_lower = hdr_name.lower()
             if hdr_name_lower in resp_headers:
                 if not hdr_pattern:
-                    # Empty pattern means "header exists" is enough
                     signals += 1
+                    signal_list.append(f"header:{hdr_name_lower}")
                 elif hdr_pattern.lower() in resp_headers[hdr_name_lower].lower():
                     signals += 1
+                    signal_list.append(f"header:{hdr_name_lower}={hdr_pattern}")
 
         # Check detect_cookies
         detect_cookies = pdata.get("detect_cookies", [])
@@ -521,6 +544,7 @@ if not detected_profile_name:
             for rc in resp_cookies:
                 if cookie_lower in rc:
                     signals += 1
+                    signal_list.append(f"cookie:{rc}")
                     break
 
         # Check detect_files (if code path is available)
@@ -530,25 +554,36 @@ if not detected_profile_name:
                 check = os.path.join(CODE_PATH, df)
                 if os.path.exists(check):
                     signals += 1
+                    signal_list.append(f"file:{df}")
 
         if signals > 0:
             profile_scores[pname] = signals
+            profile_signals[pname] = signal_list
 
-    # Confidence gating
+    # Confidence gating (with rich detection metadata)
+    _detection_score = 0
+    _detection_threshold = 2
+    _detection_signals = []
+
     if profile_scores:
         max_score = max(profile_scores.values())
         winners = [p for p, s in profile_scores.items() if s == max_score]
-        min_signals = profiles_catalog.get(winners[0], {}).get("min_detect_signals", 2) if len(winners) == 1 else 2
+        _detection_threshold = profiles_catalog.get(winners[0], {}).get("min_detect_signals", 2) if len(winners) == 1 else 2
 
-        if len(winners) == 1 and max_score >= min_signals:
+        if len(winners) == 1 and max_score >= _detection_threshold:
             detected_profile_name = winners[0]
             detect_confidence = "high"
+            _detection_score = max_score
+            _detection_signals = profile_signals.get(winners[0], [])
         elif len(winners) == 1 and max_score >= 1:
-            # Some signals but below min_detect_signals
             detect_confidence = "low"
+            _detection_score = max_score
+            _detection_signals = profile_signals.get(winners[0], [])
         else:
-            # Tie or no clear winner
             detect_confidence = "low" if max_score >= 1 else "none"
+            if winners:
+                _detection_score = max_score
+                _detection_signals = profile_signals.get(winners[0], [])
 
 
 # ── Profile expansion → tools_planned ────────────────────────────────
@@ -561,6 +596,10 @@ tools_missing = []
 if detected_profile_name and detect_confidence == "high":
     # Start with profile's tools_include (strict allowlist)
     candidate_ids = list(profile_data.get("tools_include", []))
+
+    # Intersect with what the scan script actually runs
+    scan_mode_tools = QUICK_SCAN_TOOLS if SCAN_MODE == "quick" else FULL_SCAN_TOOLS
+    candidate_ids = [t for t in candidate_ids if t in scan_mode_tools]
 
     # Remove tools_exclude
     exclude_set = set(profile_data.get("tools_exclude", []))
@@ -676,13 +715,17 @@ def is_tool_installed(tool_id, catalog, root):
             return False
     return True
 
+scan_mode_tools = QUICK_SCAN_TOOLS if SCAN_MODE == "quick" else FULL_SCAN_TOOLS
+
 if tools_planned:
-    tools_effective = list(tools_planned)
+    tools_effective = [t for t in tools_planned if t in scan_mode_tools]
 else:
-    # Legacy mode: enumerate all installed tools, apply skip + tier gate
+    # Legacy mode: enumerate all installed tools, apply skip + tier + scan-mode gate
     tools_effective = []
     skip_set_final = set(tools_skipped)
     for tid, tdata in tools_catalog.items():
+        if tid not in scan_mode_tools:
+            continue
         if tid in skip_set_final:
             continue
         if tdata.get("tier", 99) > TIER_MAX:
@@ -792,8 +835,11 @@ if preflight_path:
         },
         "missing_required_tools": [t for t in os.environ.get("SF_MISSING_TOOLS", "").split() if t],
         "stack_detection": {
-            "profile": detected_profile_name,
+            "detected_stack": detected_profile_name,
             "confidence": detect_confidence,
+            "score": _detection_score,
+            "threshold": _detection_threshold,
+            "signals": _detection_signals,
             "stack_override": STACK,
         },
         "scan_mode": SCAN_MODE,
