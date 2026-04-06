@@ -12,17 +12,17 @@ export PYTHONDONTWRITEBYTECODE=1
 sf_die() { printf '[secforge] ERROR: %s\n' "$*" >&2; exit 1; }
 
 sf_start_dashboard() {
-  # Only works inside tmux or creates a new tmux session
   if [[ -n "${TMUX:-}" ]]; then
-    # Already in tmux — split pane
+    # Already in tmux — split pane (non-blocking, scan continues in current pane)
     tmux split-window -h -d -p 40 "bash ${SECFORGE_ROOT}/scripts/dashboard.sh --start"
     tmux select-pane -t '{right}' -T secforge-dashboard 2>/dev/null || true
   elif command -v tmux >/dev/null 2>&1; then
-    # Not in tmux — create session
+    # Not in tmux — start dashboard in a detached tmux session.
+    # Scan continues in the current terminal. User or AI can attach later.
+    tmux kill-session -t secforge 2>/dev/null || true
     tmux new-session -d -s secforge "bash ${SECFORGE_ROOT}/scripts/dashboard.sh --start"
-    tmux split-window -h -p 60 -t secforge
     tmux select-pane -t secforge:0.0 -T secforge-dashboard 2>/dev/null || true
-    tmux attach -t secforge
+    echo "[secforge] Dashboard running in tmux session 'secforge'. Attach with: tmux attach -t secforge" >&2
   else
     echo "[secforge] WARN: tmux not available. Dashboard requires tmux." >&2
   fi
@@ -172,7 +172,7 @@ while i < len(args):
         out_path = args[i+1]; i += 2
     elif a == '--system' and i+1 < len(args):
         system_info = args[i+1]; i += 2
-    elif a == '--stack' and i+1 < len(args):
+    elif a in ('--stack', '--stack-hints') and i+1 < len(args):
         stack_hints = args[i+1]; i += 2
     elif a == '--inspect':
         inspect_mode = True; i += 1

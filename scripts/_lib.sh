@@ -537,12 +537,22 @@ PY
 }
 
 # --- Profile-based tool gating ---
-# Reads SECFORGE_TOOLS_PLANNED (CSV, set by preflight).
-# If empty/unset, all tools run (legacy behavior).
+# Reads SECFORGE_TOOLS_PLANNED (CSV) and SECFORGE_TOOLS_SKIPPED (CSV).
+# Skip list is always enforced (even without a profile).
+# Planned list gates tools only when a profile is active (non-empty).
 sf_should_run_tool() {
   local tool_id="$1"
+  # Check skip list first (works with or without a profile)
+  local skipped="${SECFORGE_TOOLS_SKIPPED:-}"
+  if [[ -n "${skipped}" ]]; then
+    local IFS=','
+    for t in ${skipped}; do
+      [[ "${t}" == "${tool_id}" ]] && return 1
+    done
+  fi
+  # Check planned list (only when a profile is active)
   local planned="${SECFORGE_TOOLS_PLANNED:-}"
-  [[ -z "${planned}" ]] && return 0  # No profile → run everything
+  [[ -z "${planned}" ]] && return 0  # No profile → run everything (not skipped)
   local IFS=','
   for t in ${planned}; do
     [[ "${t}" == "${tool_id}" ]] && return 0

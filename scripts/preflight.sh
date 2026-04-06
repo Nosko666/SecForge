@@ -681,6 +681,15 @@ if detected_profile_name and detect_confidence == "high":
     # Build final skipped list (only tool IDs that are in the catalog)
     tools_skipped = sorted(t for t in tools_skipped_set if t in tools_catalog)
 
+else:
+    # No profile active — legacy mode (tools_planned stays empty = run everything).
+    # Still enforce --skip and TIER_MAX so they work without profiles.
+    for skip_id in skip_set:
+        if skip_id not in tools_catalog:
+            warn(f"--skip: unknown tool ID '{skip_id}'")
+        else:
+            tools_skipped.append(skip_id)
+
 
 # ── Time estimates ───────────────────────────────────────────────────
 

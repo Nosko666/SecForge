@@ -48,6 +48,7 @@ sf_run() {
 _SF_TOOLS_RUN=()
 _SF_TOOLS_FAILED=()
 _SF_TOOL_DURATIONS=()
+_sf_tool_index=0
 
 sf_track_run() {
   # Usage: sf_track_run <tool_name> <check_file> <sf_run_args...>
@@ -58,24 +59,36 @@ sf_track_run() {
   shift 2
   local _stdout_path="$2"
   _SF_TOOLS_RUN+=("${tool_name}")
+  ((_sf_tool_index++)) || true
+  sf_emit_dashboard_event "{\"event\":\"tool_start\",\"tool\":\"${tool_name}\",\"index\":${_sf_tool_index}}"
   local _tool_start_ts="$(date +%s)"
   sf_run "$@"
   local _tool_end_ts="$(date +%s)"
   local _tool_dur=$(( _tool_end_ts - _tool_start_ts ))
   _SF_TOOL_DURATIONS+=("${tool_name}:${_tool_dur}")
+  local _tool_failed=0
   # 1. Exit code: 124=timeout, 125+=error, 126=cannot invoke, 127=not found, 128+N=signal
   if [[ "${_SF_LAST_EXIT_CODE}" -ge 124 ]]; then
     _SF_TOOLS_FAILED+=("${tool_name}")
+    _tool_failed=1
   elif [[ ! -e "${check_file}" ]]; then
     # 2. Output file never created → crashed before writing
     _SF_TOOLS_FAILED+=("${tool_name}")
+    _tool_failed=1
   elif [[ ! -s "${check_file}" ]]; then
     # 3. Empty output — check stderr for crash indicators (empty output alone is valid)
     local _err_log="${_stdout_path}.err"
     if [[ -s "${_err_log}" ]] && grep -qiE '(error|exception|traceback|killed|timeout|segfault|panic|fatal)' "${_err_log}" 2>/dev/null; then
       _SF_TOOLS_FAILED+=("${tool_name}")
+      _tool_failed=1
     fi
     # else: empty output is valid (tool ran, found nothing)
+  fi
+  # Emit dashboard event
+  if [[ "${_tool_failed}" -eq 1 ]]; then
+    sf_emit_dashboard_event "{\"event\":\"tool_fail\",\"tool\":\"${tool_name}\",\"index\":${_sf_tool_index},\"error\":\"exit ${_SF_LAST_EXIT_CODE}\"}"
+  else
+    sf_emit_dashboard_event "{\"event\":\"tool_done\",\"tool\":\"${tool_name}\",\"index\":${_sf_tool_index},\"duration\":${_tool_dur},\"findings\":0,\"status\":\"ok\"}"
   fi
 }
 
@@ -105,12 +118,20 @@ for entry in dur_raw.split(","):
             tool_durations[parts[0]] = int(parts[1])
         except ValueError:
             pass
+profile = os.environ.get("SF_MANIFEST_PROFILE", "")
+tier_max_str = os.environ.get("SF_MANIFEST_TIER_MAX", "1")
+try:
+    tier_max_val = int(tier_max_str)
+except ValueError:
+    tier_max_val = 1
 manifest = {
     "tools_run": sorted(set(tools_run)),
     "tools_failed": sorted(set(tools_failed)),
     "tool_durations": tool_durations,
     "scan_date": scan_date,
     "scan_mode": scan_mode,
+    "profile": profile,
+    "tier_max": tier_max_val,
 }
 out = os.path.join(session_dir, "scan_manifest.json")
 with open(out, "w") as f:
@@ -138,7 +159,7 @@ main() {
       sf_write_manifest "${SECFORGE_SESSION_DIR}" "quick" 2>/dev/null || true
     fi
   ' EXIT
-  if ! "${SCRIPT_DIR}/preflight.sh" --target "${target}" --profile "quick" --require-tools "curl,jq" >"${_pf_tmp}"; then
+  if ! "${SCRIPT_DIR}/preflight.sh" --target "${target}" --scan-mode quick --require-tools "curl,jq" >"${_pf_tmp}"; then
     rm -f "${_pf_tmp}"
     sf_die "Preflight failed. Check errors above."
   fi
@@ -251,15 +272,45 @@ main() {
   SF_MANIFEST_TOOLS_RUN="$(IFS=,; echo "${_SF_TOOLS_RUN[*]}")" \
   SF_MANIFEST_TOOLS_FAILED="$(IFS=,; echo "${_SF_TOOLS_FAILED[*]}")" \
   SF_MANIFEST_TOOL_DURATIONS="$(IFS=,; echo "${_SF_TOOL_DURATIONS[*]}")" \
+  SF_MANIFEST_PROFILE="${SECFORGE_STACK_PROFILE:-}" \
+  SF_MANIFEST_TIER_MAX="${SECFORGE_TIER_MAX:-1}" \
   sf_write_manifest "${SECFORGE_SESSION_DIR}" "quick"
-
-  sf_emit_dashboard_event "{\"event\":\"scan_done\",\"duration\":${SECONDS},\"total_findings\":0}"
 
   if [[ -r "${SCRIPT_DIR}/merge-reports.py" ]]; then
     sf_log "Merging reports..."
     python3 "${SCRIPT_DIR}/merge-reports.py" "${SECFORGE_SESSION_DIR}" || sf_warn "merge-reports.py failed (continuing)."
   else
     sf_warn "merge-reports.py not available yet (Phase 4)."
+  fi
+
+  # Emit scan_done with real finding counts from findings.json
+  local _scan_done_json
+  _scan_done_json="$(python3 - "${SECFORGE_SESSION_DIR}" "${SECONDS}" <<'PYSD'
+import json, sys, os
+session_dir = sys.argv[1]
+duration = sys.argv[2]
+fj = os.path.join(session_dir, "findings.json")
+total = 0
+sev = {}
+if os.path.isfile(fj):
+    try:
+        with open(fj) as f:
+            data = json.load(f)
+        findings = data.get("findings", [])
+        total = len(findings)
+        for f in findings:
+            s = f.get("severity", "info").lower()
+            sev[s] = sev.get(s, 0) + 1
+    except Exception:
+        pass
+severity_json = json.dumps(sev) if sev else "{}"
+print(f'{{"event":"scan_done","duration":{duration},"total_findings":{total},"severity":{severity_json}}}')
+PYSD
+  )" 2>/dev/null || true
+  if [[ -n "${_scan_done_json}" ]]; then
+    sf_emit_dashboard_event "${_scan_done_json}"
+  else
+    sf_emit_dashboard_event "{\"event\":\"scan_done\",\"duration\":${SECONDS},\"total_findings\":0}"
   fi
 
   sf_log "Quick scan complete."
