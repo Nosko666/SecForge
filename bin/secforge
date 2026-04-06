@@ -298,6 +298,22 @@ if not checks:
     print('No verification checks found for the specified finding/pack.', file=sys.stderr)
     sys.exit(1)
 
+# Dashboard event emission for verify
+import json as _json
+_sf_status = os.environ.get('SECFORGE_DASHBOARD_STATUS', '')
+if not _sf_status and scan_id:
+    _sf_status = f'/tmp/secforge-dashboard-{scan_id}.status'
+def _emit_verify(evt):
+    if not _sf_status: return
+    try:
+        with open(_sf_status, 'a') as _fh:
+            _fh.write(_json.dumps(evt) + '\n')
+    except OSError:
+        pass
+
+_pack_label = pack_id or finding_id or 'unknown'
+_emit_verify({'event': 'verify_start', 'pack': _pack_label, 'checks_total': len(checks)})
+
 results = run_verification(checks, stage_filter=stage, execute=execute, allow_noisy=allow_noisy, allow_sudo=allow_sudo, context=ctx)
 
 # Display results
@@ -314,6 +330,7 @@ for r in results:
 
 passed = sum(1 for r in results if r.passed)
 total = len(results)
+_emit_verify({'event': 'verify_done', 'pack': _pack_label, 'passed': passed, 'failed': total - passed})
 if execute:
     print(f'Results: {passed}/{total} passed')
 

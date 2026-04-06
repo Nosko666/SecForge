@@ -825,10 +825,20 @@ install_single_tool() {
   fi
 }
 
+# ── Dashboard status file for install flows ──────────────────────────
+_sf_init_install_dashboard() {
+  if [[ -z "${SECFORGE_DASHBOARD_STATUS:-}" ]]; then
+    SECFORGE_DASHBOARD_STATUS="/tmp/secforge-dashboard-install-$$.status"
+    export SECFORGE_DASHBOARD_STATUS
+  fi
+  ln -sf "${SECFORGE_DASHBOARD_STATUS}" /tmp/secforge-dashboard-latest.status 2>/dev/null || true
+}
+
 # ── --all: Install everything non-builtin ────────────────────────────
 
 do_install_all() {
   sf_need_root
+  _sf_init_install_dashboard
 
   local tool_ids
   tool_ids="$(SF_TOOLS_JSON="${TOOLS_JSON}" python3 - <<'PY'
@@ -888,12 +898,17 @@ PY
 
 do_install_from_selection() {
   sf_need_root
+  _sf_init_install_dashboard
 
   local selection_file="$1"
 
   if [[ ! -r "${selection_file}" ]]; then
     sf_die "Cannot read selection file: ${selection_file}"
   fi
+
+  local _sel_count
+  _sel_count="$(grep -cve '^\s*$' "${selection_file}" 2>/dev/null || echo 0)"
+  sf_emit_dashboard_event "{\"event\":\"install_start\",\"tools_total\":${_sel_count}}"
 
   local failed=0
   local success=0
@@ -953,6 +968,8 @@ main() {
     *)
       # Individual tool(s) install
       sf_need_root
+      _sf_init_install_dashboard
+      sf_emit_dashboard_event "{\"event\":\"install_start\",\"tools_total\":${#}}"
 
       local failed=0
       local success=0

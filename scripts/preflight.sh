@@ -696,29 +696,39 @@ else:
 
 # ── Time estimates ───────────────────────────────────────────────────
 
-# Glob previous manifests for historical durations
-historical = {}  # tool_id -> list of durations
+# Glob previous manifests for historical durations (two-tier: exact → target → static)
+history_exact = {}   # tool -> [durations] from matching (target, profile, scan_mode)
+history_target = {}  # tool -> [durations] from same target, any profile/mode
 if TARGET_HOST:
     manifest_pattern = os.path.join(
         SECFORGE_ROOT, "reports", f"20*_{TARGET_HOST}*", "scan_manifest.json"
     )
-    manifest_files = sorted(glob.glob(manifest_pattern))[-5:]  # last 5
+    # Scan more than 5 manifests so exact-match isn't often empty
+    manifest_files = sorted(glob.glob(manifest_pattern))[-20:]
     for mf in manifest_files:
         try:
             with open(mf, "r", encoding="utf-8") as fh:
                 mdata = json.load(fh)
+            m_profile = mdata.get("profile", "")
+            m_mode = mdata.get("scan_mode", "")
             durations = mdata.get("tool_durations", {})
             for tid, dur in durations.items():
                 if isinstance(dur, (int, float)) and dur > 0:
-                    historical.setdefault(tid, []).append(dur)
+                    history_target.setdefault(tid, []).append(dur)
+                    if m_profile == detected_profile_name and m_mode == SCAN_MODE:
+                        history_exact.setdefault(tid, []).append(dur)
         except Exception:
             pass
 
+# Estimate: exact (target+profile+mode) → target-only → static default
 total_est = 0
 for tool_id in tools_effective:
-    hist = historical.get(tool_id, [])
-    if hist:
-        est = int(statistics.median(hist[-5:]))
+    exact = history_exact.get(tool_id, [])
+    target_hist = history_target.get(tool_id, [])
+    if exact:
+        est = int(statistics.median(exact[-5:]))
+    elif target_hist:
+        est = int(statistics.median(target_hist[-5:]))
     else:
         est = tools_catalog.get(tool_id, {}).get("est_seconds", 0)
     total_est += est
