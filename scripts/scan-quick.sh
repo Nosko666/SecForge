@@ -159,7 +159,13 @@ main() {
       sf_write_manifest "${SECFORGE_SESSION_DIR}" "quick" 2>/dev/null || true
     fi
   ' EXIT
-  if ! "${SCRIPT_DIR}/preflight.sh" --target "${target}" --scan-mode quick --require-tools "curl,jq" >"${_pf_tmp}"; then
+  # Forward CLI flags to preflight (set as env vars by bin/secforge)
+  local _pf_args=(--target "${target}" --scan-mode quick --require-tools "curl,jq")
+  [[ -n "${SECFORGE_STACK:-}" ]] && _pf_args+=(--stack "${SECFORGE_STACK}")
+  [[ -n "${SECFORGE_SKIP:-}" ]] && _pf_args+=(--skip "${SECFORGE_SKIP}")
+  [[ -n "${SECFORGE_TIER_OVERRIDE:-}" ]] && _pf_args+=(--tier "${SECFORGE_TIER_OVERRIDE}")
+  [[ -n "${SECFORGE_CODE_PATH:-}" ]] && _pf_args+=(--code-path "${SECFORGE_CODE_PATH}")
+  if ! "${SCRIPT_DIR}/preflight.sh" "${_pf_args[@]}" >"${_pf_tmp}"; then
     rm -f "${_pf_tmp}"
     sf_die "Preflight failed. Check errors above."
   fi
@@ -249,12 +255,17 @@ main() {
     # Built-in web checks (zero-dep, ~5s, catches .env/.git/headers/cookies)
     if sf_should_run_tool "secforge-builtin" && [[ "${SECFORGE_TARGET_HOST}" != "this_server" ]]; then
       _SF_TOOLS_RUN+=("secforge-builtin")
+      ((_sf_tool_index++)) || true
+      sf_emit_dashboard_event "{\"event\":\"tool_start\",\"tool\":\"secforge-builtin\",\"index\":${_sf_tool_index}}"
       local _builtin_start="$(date +%s)"
       sf_builtin_web_checks "${SECFORGE_TARGET_URL%/}" "${SECFORGE_SESSION_DIR}/webapp/builtin.json" "${SECFORGE_SCAN_DELAY_MS:-200}"
       local _builtin_dur=$(( $(date +%s) - _builtin_start ))
       _SF_TOOL_DURATIONS+=("secforge-builtin:${_builtin_dur}")
       if [[ ! -s "${SECFORGE_SESSION_DIR}/webapp/builtin.json" ]]; then
         _SF_TOOLS_FAILED+=("secforge-builtin")
+        sf_emit_dashboard_event "{\"event\":\"tool_fail\",\"tool\":\"secforge-builtin\",\"index\":${_sf_tool_index},\"error\":\"empty output\"}"
+      else
+        sf_emit_dashboard_event "{\"event\":\"tool_done\",\"tool\":\"secforge-builtin\",\"index\":${_sf_tool_index},\"duration\":${_builtin_dur},\"findings\":0,\"status\":\"ok\"}"
       fi
     fi
   fi

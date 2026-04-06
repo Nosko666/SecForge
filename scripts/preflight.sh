@@ -274,62 +274,8 @@ main() {
     sf_warn "Missing required tools: ${missing_tools}"
   fi
 
-  # Save a machine-readable snapshot.
-  local now
-  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  SF_NOW="${now}" \
-  SF_TARGET_INPUT="${target}" \
-  SF_TARGET_KIND="${kind}" \
-  SF_TARGET_URL="${base_url}" \
-  SF_TARGET_FULL_URL="${url}" \
-  SF_TARGET_HOST="${host}" \
-  SF_TARGET_PORT="${port}" \
-  SF_PROFILE="${profile}" \
-  SF_HTTP_CODE="${http_code}" \
-  SF_LATENCY_SECONDS="${latency_s}" \
-  SF_SCAN_DELAY_MS="${scan_delay_ms}" \
-  SF_MAX_CONCURRENT="${max_concurrent}" \
-  SF_CB_THRESHOLD="${threshold}" \
-  SF_CB_COOLDOWN="${cooldown}" \
-  SF_MISSING_TOOLS="${missing_tools}" \
-  SF_PREFLIGHT_PATH="${session_dir}/preflight.json" \
-  python3 - <<'PY'
-import json
-import os
-
-def int_or_none(s):
-  try:
-    return int(s)
-  except Exception:
-    return None
-
-data = {
-  "timestamp_utc": os.environ.get("SF_NOW", ""),
-  "target_input": os.environ.get("SF_TARGET_INPUT", ""),
-  "target_kind": os.environ.get("SF_TARGET_KIND", ""),
-  "target_url": os.environ.get("SF_TARGET_URL", ""),
-  "target_full_url": os.environ.get("SF_TARGET_FULL_URL", ""),
-  "target_host": os.environ.get("SF_TARGET_HOST", ""),
-  "target_port": os.environ.get("SF_TARGET_PORT", ""),
-  "profile": os.environ.get("SF_PROFILE", ""),
-  "baseline": {
-    "http_code": os.environ.get("SF_HTTP_CODE", ""),
-    "latency_seconds": os.environ.get("SF_LATENCY_SECONDS", ""),
-  },
-  "config": {
-    "scan_delay_ms": int_or_none(os.environ.get("SF_SCAN_DELAY_MS", "")),
-    "max_concurrent_tools": int_or_none(os.environ.get("SF_MAX_CONCURRENT", "")),
-    "circuit_breaker_threshold_seconds": int_or_none(os.environ.get("SF_CB_THRESHOLD", "")),
-    "circuit_breaker_cooldown_seconds": int_or_none(os.environ.get("SF_CB_COOLDOWN", "")),
-  },
-  "missing_required_tools": [t for t in os.environ.get("SF_MISSING_TOOLS", "").split() if t],
-}
-
-out_path = os.environ.get("SF_PREFLIGHT_PATH", "")
-if out_path:
-  with open(out_path, "w", encoding="utf-8") as f:
-    json.dump(data, f, indent=2, sort_keys=True)
-PY
+  # preflight.json is written by the PYPLAN heredoc below (after planner runs)
+  # so it includes stack detection, planned tools, estimates, etc.
 
   # Safe exports for callers (stdout only).
   # Use declare -p with an explicit allowlist to avoid shell injection.
@@ -373,6 +319,18 @@ PY
   SECFORGE_TARGET_HOST="${host}" \
   SECFORGE_CODE_PATH="${code_path}" \
   SECFORGE_CONFIG_FILE="${SECFORGE_CONFIG_FILE}" \
+  SF_PREFLIGHT_PATH="${session_dir}/preflight.json" \
+  SF_TARGET_INPUT="${target}" \
+  SF_TARGET_KIND="${kind}" \
+  SF_TARGET_FULL_URL="${url}" \
+  SF_TARGET_PORT="${port}" \
+  SF_HTTP_CODE="${http_code}" \
+  SF_LATENCY_SECONDS="${latency_s}" \
+  SF_SCAN_DELAY_MS="${scan_delay_ms}" \
+  SF_MAX_CONCURRENT="${max_concurrent}" \
+  SF_CB_THRESHOLD="${threshold}" \
+  SF_CB_COOLDOWN="${cooldown}" \
+  SF_MISSING_TOOLS="${missing_tools}" \
   python3 - <<'PYPLAN'
 import glob
 import json
@@ -691,6 +649,51 @@ else:
             tools_skipped.append(skip_id)
 
 
+# ── Build tools_effective (what will actually run) ───────────────────
+# In profile mode: same as tools_planned.
+# In no-profile mode: all installed tools minus skipped, minus tier-gated.
+# Used for: estimates, dashboard tools_total, preflight.json.
+
+def is_tool_installed(tool_id, catalog, root):
+    """Check if a tool passes all installedness criteria."""
+    tdata = catalog.get(tool_id, {})
+    check = tdata.get("check", {})
+    check_cmd = check.get("command", "")
+    check_p = check.get("path", "")
+    if check_cmd and not cmd_exists(check_cmd, root):
+        return False
+    if check_p and not path_exists(check_p, root):
+        return False
+    for dep_id in tdata.get("depends_on", []):
+        dep_data = catalog.get(dep_id, {})
+        dep_check = dep_data.get("check", {})
+        if dep_check.get("command") and not cmd_exists(dep_check["command"], root):
+            return False
+        if dep_check.get("path") and not path_exists(dep_check["path"], root):
+            return False
+    for req_cmd in tdata.get("requires_commands", []):
+        if not cmd_exists(req_cmd, root):
+            return False
+    return True
+
+if tools_planned:
+    tools_effective = list(tools_planned)
+else:
+    # Legacy mode: enumerate all installed tools, apply skip + tier gate
+    tools_effective = []
+    skip_set_final = set(tools_skipped)
+    for tid, tdata in tools_catalog.items():
+        if tid in skip_set_final:
+            continue
+        if tdata.get("tier", 99) > TIER_MAX:
+            continue
+        if tdata.get("install_method") == "builtin":
+            tools_effective.append(tid)
+            continue
+        if is_tool_installed(tid, tools_catalog, SECFORGE_ROOT):
+            tools_effective.append(tid)
+
+
 # ── Time estimates ───────────────────────────────────────────────────
 
 # Glob previous manifests for historical durations
@@ -702,8 +705,8 @@ if TARGET_HOST:
     manifest_files = sorted(glob.glob(manifest_pattern))[-5:]  # last 5
     for mf in manifest_files:
         try:
-            with open(mf, "r", encoding="utf-8") as f:
-                mdata = json.load(f)
+            with open(mf, "r", encoding="utf-8") as fh:
+                mdata = json.load(fh)
             durations = mdata.get("tool_durations", {})
             for tid, dur in durations.items():
                 if isinstance(dur, (int, float)) and dur > 0:
@@ -712,7 +715,7 @@ if TARGET_HOST:
             pass
 
 total_est = 0
-for tool_id in tools_planned:
+for tool_id in tools_effective:
     hist = historical.get(tool_id, [])
     if hist:
         est = int(statistics.median(hist[-5:]))
@@ -737,6 +740,7 @@ emit("SECFORGE_STACK_PROFILE", detected_profile_name)
 emit("SECFORGE_DETECTED_STACK", detected_profile_name)
 emit("SECFORGE_DETECT_CONFIDENCE", detect_confidence)
 emit("SECFORGE_TOOLS_PLANNED", ",".join(tools_planned))
+emit("SECFORGE_TOOLS_EFFECTIVE", ",".join(tools_effective))
 emit("SECFORGE_TOOLS_SKIPPED", ",".join(tools_skipped))
 emit("SECFORGE_TOOLS_MISSING", ",".join(tools_missing))
 emit("SECFORGE_NUCLEI_TAGS", nuclei_tags)
@@ -745,7 +749,59 @@ emit("SECFORGE_COMMON_ENDPOINTS", common_endpoints)
 emit("SECFORGE_TIER_MAX", str(TIER_MAX))
 emit("SECFORGE_SCAN_MODE", SCAN_MODE)
 emit("SECFORGE_EST_SECONDS", str(total_est))
-emit("SECFORGE_EST_TOOLS_TOTAL", str(len(tools_planned)))
+emit("SECFORGE_EST_TOOLS_TOTAL", str(len(tools_effective)))
+
+
+# ── Write preflight.json (after planner, includes all results) ───────
+
+def _int_or_none(s):
+    try:
+        return int(s)
+    except (ValueError, TypeError):
+        return None
+
+preflight_path = os.environ.get("SF_PREFLIGHT_PATH", "")
+if preflight_path:
+    preflight_data = {
+        "timestamp_utc": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "target_input": os.environ.get("SF_TARGET_INPUT", ""),
+        "target_kind": os.environ.get("SF_TARGET_KIND", "url"),
+        "target_url": TARGET_URL,
+        "target_full_url": os.environ.get("SF_TARGET_FULL_URL", ""),
+        "target_host": TARGET_HOST,
+        "target_port": os.environ.get("SF_TARGET_PORT", ""),
+        "baseline": {
+            "http_code": os.environ.get("SF_HTTP_CODE", ""),
+            "latency_seconds": os.environ.get("SF_LATENCY_SECONDS", ""),
+        },
+        "config": {
+            "scan_delay_ms": _int_or_none(os.environ.get("SF_SCAN_DELAY_MS", "")),
+            "max_concurrent_tools": _int_or_none(os.environ.get("SF_MAX_CONCURRENT", "")),
+            "circuit_breaker_threshold_seconds": _int_or_none(os.environ.get("SF_CB_THRESHOLD", "")),
+            "circuit_breaker_cooldown_seconds": _int_or_none(os.environ.get("SF_CB_COOLDOWN", "")),
+        },
+        "missing_required_tools": [t for t in os.environ.get("SF_MISSING_TOOLS", "").split() if t],
+        "stack_detection": {
+            "profile": detected_profile_name,
+            "confidence": detect_confidence,
+            "stack_override": STACK,
+        },
+        "scan_mode": SCAN_MODE,
+        "tier_max": TIER_MAX,
+        "tools_planned": tools_planned,
+        "tools_effective": tools_effective,
+        "tools_skipped": tools_skipped,
+        "tools_missing": tools_missing,
+        "nuclei_tags": nuclei_tags,
+        "nuclei_exclude_tags": nuclei_exclude_tags,
+        "est_seconds": total_est,
+        "est_tools_total": len(tools_effective),
+    }
+    try:
+        with open(preflight_path, "w", encoding="utf-8") as pfh:
+            json.dump(preflight_data, pfh, indent=2, sort_keys=True)
+    except OSError as exc:
+        warn(f"Could not write {preflight_path}: {exc}")
 PYPLAN
 }
 

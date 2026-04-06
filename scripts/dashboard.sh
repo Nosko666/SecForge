@@ -352,7 +352,7 @@ PY
       --unselected-prefix "[ ] " 2>/dev/null || true)"
     if [[ -z "${selected}" ]]; then echo "No tools selected."; return 0; fi
     ids="$(echo "${selected}" | awk -F'\t' '{print $1}')"
-    local sel_file="/tmp/secforge-dashboard-$$.selection"
+    local sel_file="/tmp/secforge-dashboard-${SECFORGE_SESSION_ID:-$$}.selection"
     echo "${ids}" > "${sel_file}"
     echo "Selected: $(echo "${ids}" | tr '\n' ' ')"
     echo "Selection written to: ${sel_file}"
@@ -394,7 +394,7 @@ PY
     fi
     ids="$(echo "${ids}" | xargs)"
     if [[ -z "${ids}" ]]; then echo "No valid tools selected."; return 0; fi
-    local sel_file="/tmp/secforge-dashboard-$$.selection"
+    local sel_file="/tmp/secforge-dashboard-${SECFORGE_SESSION_ID:-$$}.selection"
     # Write one tool ID per line (matches install-tools.sh --from-selection format)
     printf '%s\n' ${ids} > "${sel_file}"
     echo ""; echo "Selected: ${ids}"; echo "Selection written to: ${sel_file}"

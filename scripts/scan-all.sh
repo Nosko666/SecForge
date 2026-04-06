@@ -40,7 +40,7 @@ sf_cleanup_bg() {
     SF_MANIFEST_TOOLS_RUN="$(IFS=,; echo "${_SF_TOOLS_RUN[*]:-}")" \
     SF_MANIFEST_TOOLS_FAILED="$(IFS=,; echo "${_SF_TOOLS_FAILED[*]:-}")" \
     SF_MANIFEST_TOOL_DURATIONS="$(IFS=,; echo "${_SF_TOOL_DURATIONS[*]:-}")" \
-    sf_write_manifest "${SECFORGE_SESSION_DIR}" "all" 2>/dev/null || true
+    sf_write_manifest "${SECFORGE_SESSION_DIR}" "full" 2>/dev/null || true
   fi
 
   if [[ "${ZAP_STARTED}" == "1" && -n "${ZAP_API_BASE}" ]] && command -v curl >/dev/null 2>&1; then
@@ -334,7 +334,13 @@ main() {
   # Preflight exports session vars (safe: tempfile, not process substitution).
   local _pf_tmp
   _pf_tmp="$(mktemp /tmp/secforge-preflight.XXXXXX)"
-  if ! "${SCRIPT_DIR}/preflight.sh" --target "${target}" --scan-mode full --require-tools "curl,jq" >"${_pf_tmp}"; then
+  # Forward CLI flags to preflight (set as env vars by bin/secforge)
+  local _pf_args=(--target "${target}" --scan-mode full --require-tools "curl,jq")
+  [[ -n "${SECFORGE_STACK:-}" ]] && _pf_args+=(--stack "${SECFORGE_STACK}")
+  [[ -n "${SECFORGE_SKIP:-}" ]] && _pf_args+=(--skip "${SECFORGE_SKIP}")
+  [[ -n "${SECFORGE_TIER_OVERRIDE:-}" ]] && _pf_args+=(--tier "${SECFORGE_TIER_OVERRIDE}")
+  [[ -n "${SECFORGE_CODE_PATH:-}" ]] && _pf_args+=(--code-path "${SECFORGE_CODE_PATH}")
+  if ! "${SCRIPT_DIR}/preflight.sh" "${_pf_args[@]}" >"${_pf_tmp}"; then
     rm -f "${_pf_tmp}"
     sf_die "Preflight failed. Check errors above."
   fi
@@ -456,12 +462,17 @@ main() {
     # Built-in curl checks (zero-dependency, high value).
     if sf_should_run_tool "secforge-builtin"; then
       _SF_TOOLS_RUN+=("secforge-builtin")
+      ((_sf_tool_index++)) || true
+      sf_emit_dashboard_event "{\"event\":\"tool_start\",\"tool\":\"secforge-builtin\",\"index\":${_sf_tool_index}}"
       local _builtin_start="$(date +%s)"
       sf_builtin_web_checks "${SECFORGE_TARGET_URL%/}" "${SECFORGE_SESSION_DIR}/webapp/builtin.json" "${delay_ms}"
       local _builtin_dur=$(( $(date +%s) - _builtin_start ))
       _SF_TOOL_DURATIONS+=("secforge-builtin:${_builtin_dur}")
       if [[ ! -s "${SECFORGE_SESSION_DIR}/webapp/builtin.json" ]]; then
         _SF_TOOLS_FAILED+=("secforge-builtin")
+        sf_emit_dashboard_event "{\"event\":\"tool_fail\",\"tool\":\"secforge-builtin\",\"index\":${_sf_tool_index},\"error\":\"empty output\"}"
+      else
+        sf_emit_dashboard_event "{\"event\":\"tool_done\",\"tool\":\"secforge-builtin\",\"index\":${_sf_tool_index},\"duration\":${_builtin_dur},\"findings\":0,\"status\":\"ok\"}"
       fi
     fi
 
@@ -576,9 +587,12 @@ main() {
     fi
   fi
 
-  if sf_should_run_tool "check-mysql" && [[ -r "${SCRIPT_DIR}/check-mysql.sh" ]]; then
-    chmod +x "${SCRIPT_DIR}/check-mysql.sh" 2>/dev/null || true
-    sf_track_run check-mysql "${SECFORGE_SESSION_DIR}/database/mysql.json" 60 "${SECFORGE_SESSION_DIR}/database/mysql.json" "${SCRIPT_DIR}/check-mysql.sh"
+  # check-mysql: only for local targets with active MySQL service
+  if sf_should_run_tool "check-mysql" && [[ "${SECFORGE_TARGET_HOST}" == "this_server" ]] && [[ -r "${SCRIPT_DIR}/check-mysql.sh" ]]; then
+    if systemctl is-active --quiet mysql 2>/dev/null || systemctl is-active --quiet mariadb 2>/dev/null; then
+      chmod +x "${SCRIPT_DIR}/check-mysql.sh" 2>/dev/null || true
+      sf_track_run check-mysql "${SECFORGE_SESSION_DIR}/database/mysql.json" 60 "${SECFORGE_SESSION_DIR}/database/mysql.json" "${SCRIPT_DIR}/check-mysql.sh"
+    fi
   fi
 
   # Optional codebase scans.

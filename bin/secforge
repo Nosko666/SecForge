@@ -724,15 +724,16 @@ state.close()
         sf_start_dashboard
         ;;
       --restart)
-        # Kill existing dashboard pane
-        tmux kill-pane -t secforge-dashboard 2>/dev/null || true
+        tmux kill-pane -t secforge-dashboard 2>/dev/null || \
+          tmux kill-session -t secforge 2>/dev/null || true
         sf_start_dashboard
         ;;
       --last)
         exec bash "${SECFORGE_ROOT}/scripts/dashboard.sh" --last
         ;;
       --close)
-        tmux kill-pane -t secforge-dashboard 2>/dev/null || true
+        tmux kill-pane -t secforge-dashboard 2>/dev/null || \
+          tmux kill-session -t secforge 2>/dev/null || true
         echo "Dashboard closed."
         ;;
       *)

@@ -439,6 +439,8 @@ install_single_tool() {
   eval "${meta}"
 
   sf_log "Installing ${tool_id} (${TOOL_TITLE}) via ${TOOL_METHOD}..."
+  local _install_start_ts
+  _install_start_ts="$(date +%s)"
 
   # Handle depends_on first (one level deep)
   if [[ -n "${TOOL_DEPENDS_ON}" ]]; then
@@ -580,14 +582,19 @@ install_single_tool() {
   if [[ "${post_status}" == "installed" || "${post_status}" == "builtin" ]]; then
     # Update config
     sf_cfg_add_list_item "${SECFORGE_CONFIG_FILE}" "INSTALLED_TOOLS" "${tool_id}"
+    local _install_dur=$(( $(date +%s) - _install_start_ts ))
+    sf_emit_dashboard_event "{\"event\":\"install_done\",\"tool\":\"${tool_id}\",\"status\":\"ok\",\"duration\":${_install_dur}}"
     sf_log "${tool_id}: installed successfully."
     return 0
   else
     # For custom method, don't fail — just warn
     if [[ "${TOOL_METHOD}" == "custom" ]]; then
       sf_warn "${tool_id}: manual installation required. Could not verify."
+      sf_emit_dashboard_event "{\"event\":\"install_done\",\"tool\":\"${tool_id}\",\"status\":\"manual\",\"duration\":0}"
       return 1
     fi
+    local _install_dur_fail=$(( $(date +%s) - _install_start_ts ))
+    sf_emit_dashboard_event "{\"event\":\"install_done\",\"tool\":\"${tool_id}\",\"status\":\"fail\",\"duration\":${_install_dur_fail}}"
     sf_warn "${tool_id}: installation completed but verification failed."
     return 1
   fi
@@ -631,6 +638,9 @@ PY
   local success=0
   local skipped=0
   local tool_id
+  local _tools_total
+  _tools_total="$(echo ${tool_ids} | wc -w)"
+  sf_emit_dashboard_event "{\"event\":\"install_start\",\"tools_total\":${_tools_total}}"
 
   for tool_id in ${tool_ids}; do
     local status
