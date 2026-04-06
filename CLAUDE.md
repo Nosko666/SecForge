@@ -344,7 +344,7 @@ This writes:
 {
   "scan_date": "2026-03-30T14:30:00Z",
   "target": "example.com",
-  "scan_profile": "full_web",
+  "scan_profile": "node-nginx",
   "tools_run": ["nuclei", "nmap", "zap", "testssl"],
   "summary": { "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0 },
   "findings": [
