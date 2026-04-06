@@ -2102,7 +2102,7 @@ def _run_v2_pipeline(session_dir: Path) -> Optional[Path]:
         profile = str(preflight.get("profile") or "")
         if not profile:
             _sd = preflight.get("stack_detection") or {}
-            profile = str(_sd.get("profile") or "")
+            profile = str(_sd.get("detected_stack") or _sd.get("profile") or "")
         session_id = session_dir.name
 
         # 2. Parse all tool outputs
