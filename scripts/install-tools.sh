@@ -402,6 +402,231 @@ print(f"TOOL_INSTRUCTIONS='{safe_val(instructions)}'")
 PY
 }
 
+# ── Custom install functions ──────────────────────────────────────────
+# Called by the "custom" install method dispatch. Each function is
+# self-contained, using only _lib.sh helpers (already sourced).
+
+install_zap() {
+  local zap_dir="${SECFORGE_ROOT}/tools/zap"
+  local zap_sh="${zap_dir}/zap.sh"
+
+  if [[ -x "${zap_sh}" ]]; then
+    return 0
+  fi
+
+  if ! sf_has_cmd jq; then
+    sf_die "jq is required to install ZAP (GitHub API)."
+  fi
+
+  sf_log "Installing OWASP ZAP (tarball)..."
+  sf_apt_install default-jre
+
+  mkdir -p "${SECFORGE_ROOT}/tools"
+
+  local tmp url archive extract_dir zap_extracted
+  tmp="$(sf_mktemp_dir)"
+  url="$(sf_github_latest_release_json "zaproxy/zaproxy" | jq -r '
+    .assets[]
+    | select(.name | test("Linux.*\\.tar\\.gz$"; "i"))
+    | .browser_download_url
+  ' | head -n1)"
+
+  if [[ -z "${url}" || "${url}" == "null" ]]; then
+    sf_warn "Could not find ZAP Linux tarball in latest release (skipping)."
+    rm -rf "${tmp}"
+    return 1
+  fi
+
+  archive="${tmp}/$(basename -- "${url}")"
+  extract_dir="${tmp}/extract"
+
+  sf_curl -o "${archive}" "${url}"
+  sf_extract_archive_to_dir "${archive}" "${extract_dir}"
+
+  zap_extracted="$(find "${extract_dir}" -maxdepth 2 -type f -name zap.sh -print | head -n1 || true)"
+  if [[ -z "${zap_extracted}" ]]; then
+    sf_warn "ZAP tarball extracted but zap.sh was not found (skipping)."
+    rm -rf "${tmp}"
+    return 1
+  fi
+
+  rm -rf "${zap_dir}"
+  mkdir -p "${zap_dir}"
+  # Move the whole extracted directory containing zap.sh into tools/zap
+  mv "$(dirname -- "${zap_extracted}")"/* "${zap_dir}/"
+
+  rm -rf "${tmp}"
+
+  chmod +x "${zap_sh}" 2>/dev/null || true
+  sf_ln_sf "${zap_sh}" "${SECFORGE_ROOT}/bin/zap.sh"
+}
+
+install_xsstrike() {
+  sf_git_clone_or_update "https://github.com/s0md3v/XSStrike.git" "${SECFORGE_ROOT}/tools/xsstrike"
+  local venv="${SECFORGE_ROOT}/venv/xsstrike"
+  sf_ensure_venv "${venv}"
+  if [[ -r "${SECFORGE_ROOT}/tools/xsstrike/requirements.txt" ]]; then
+    sf_install_venv_packages "${venv}" -r "${SECFORGE_ROOT}/tools/xsstrike/requirements.txt" || sf_warn "XSStrike deps failed (continuing)."
+  fi
+  if [[ -r "${SECFORGE_ROOT}/tools/xsstrike/xsstrike.py" ]]; then
+    cat >"${SECFORGE_ROOT}/bin/xsstrike" <<XEOF
+#!/usr/bin/env bash
+exec "${venv}/bin/python" "${SECFORGE_ROOT}/tools/xsstrike/xsstrike.py" "\$@"
+XEOF
+    chmod 0755 "${SECFORGE_ROOT}/bin/xsstrike"
+  fi
+}
+
+install_corscanner() {
+  sf_git_clone_or_update "https://github.com/chenjj/CORScanner.git" "${SECFORGE_ROOT}/tools/corscanner"
+  local venv="${SECFORGE_ROOT}/venv/corscanner"
+  sf_ensure_venv "${venv}"
+  if [[ -r "${SECFORGE_ROOT}/tools/corscanner/requirements.txt" ]]; then
+    sf_install_venv_packages "${venv}" -r "${SECFORGE_ROOT}/tools/corscanner/requirements.txt" || sf_warn "CORScanner deps failed (continuing)."
+  fi
+  local cors_entry
+  cors_entry="$(find "${SECFORGE_ROOT}/tools/corscanner" -maxdepth 2 -type f \( -iname '*cors*scanner*.py' -o -iname 'corscanner.py' -o -iname 'cors_scan.py' \) 2>/dev/null | head -n1 || true)"
+  if [[ -n "${cors_entry}" ]]; then
+    cat >"${SECFORGE_ROOT}/bin/corscanner" <<CEOF
+#!/usr/bin/env bash
+exec "${venv}/bin/python" "${cors_entry}" "\$@"
+CEOF
+    chmod 0755 "${SECFORGE_ROOT}/bin/corscanner"
+  else
+    sf_warn "CORScanner cloned but entrypoint not found; leaving in tools/ for manual use."
+  fi
+}
+
+install_commix() {
+  sf_git_clone_or_update "https://github.com/commixproject/commix.git" "${SECFORGE_ROOT}/tools/commix"
+  if [[ -r "${SECFORGE_ROOT}/tools/commix/commix.py" ]]; then
+    cat >"${SECFORGE_ROOT}/bin/commix" <<MEOF
+#!/usr/bin/env bash
+exec python3 "${SECFORGE_ROOT}/tools/commix/commix.py" "\$@"
+MEOF
+    chmod 0755 "${SECFORGE_ROOT}/bin/commix"
+  fi
+}
+
+install_jwt_tool() {
+  sf_git_clone_or_update "https://github.com/ticarpi/jwt_tool.git" "${SECFORGE_ROOT}/tools/jwt_tool"
+  local venv="${SECFORGE_ROOT}/venv/jwt_tool"
+  sf_ensure_venv "${venv}"
+  if [[ -r "${SECFORGE_ROOT}/tools/jwt_tool/requirements.txt" ]]; then
+    sf_install_venv_packages "${venv}" -r "${SECFORGE_ROOT}/tools/jwt_tool/requirements.txt" || sf_warn "jwt_tool deps failed (continuing)."
+  fi
+  if [[ -r "${SECFORGE_ROOT}/tools/jwt_tool/jwt_tool.py" ]]; then
+    cat >"${SECFORGE_ROOT}/bin/jwt_tool" <<JEOF
+#!/usr/bin/env bash
+exec "${venv}/bin/python" "${SECFORGE_ROOT}/tools/jwt_tool/jwt_tool.py" "\$@"
+JEOF
+    chmod 0755 "${SECFORGE_ROOT}/bin/jwt_tool"
+  fi
+}
+
+install_netexec() {
+  sf_apt_install python3-dev build-essential libffi-dev libssl-dev
+  local nxc_venv="${SECFORGE_ROOT}/venvs/netexec"
+  sf_git_clone_or_update "https://github.com/Pennyw0rth/NetExec.git" "${SECFORGE_ROOT}/tools/netexec"
+  if [[ -d "${SECFORGE_ROOT}/tools/netexec" ]]; then
+    sf_log "Installing NetExec into dedicated venv (best-effort)..."
+    python3 -m venv "${nxc_venv}" 2>/dev/null || true
+    if [[ -x "${nxc_venv}/bin/pip" ]]; then
+      "${nxc_venv}/bin/pip" install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
+      "${nxc_venv}/bin/pip" install -e "${SECFORGE_ROOT}/tools/netexec" >/dev/null 2>&1 || sf_warn "NetExec install failed (best-effort; leaving repo for manual setup)."
+    fi
+  fi
+
+  if [[ -x "${nxc_venv}/bin/nxc" ]]; then
+    cat >"${SECFORGE_ROOT}/bin/nxc" <<NEOF
+#!/usr/bin/env bash
+exec "${nxc_venv}/bin/nxc" "\$@"
+NEOF
+    chmod 0755 "${SECFORGE_ROOT}/bin/nxc"
+  elif command -v nxc >/dev/null 2>&1; then
+    sf_ln_sf "$(command -v nxc)" "${SECFORGE_ROOT}/bin/nxc"
+  else
+    sf_warn "NetExec binary (nxc) not found after install attempt."
+  fi
+}
+
+install_apkdeeplens() {
+  sf_git_clone_or_update "https://github.com/d78ui98/APKDeepLens.git" "${SECFORGE_ROOT}/tools/apkdeeplens"
+  local venv="${SECFORGE_ROOT}/venv/apkdeeplens"
+  sf_ensure_venv "${venv}"
+  if [[ -r "${SECFORGE_ROOT}/tools/apkdeeplens/requirements.txt" ]]; then
+    sf_install_venv_packages "${venv}" -r "${SECFORGE_ROOT}/tools/apkdeeplens/requirements.txt" || sf_warn "APKDeepLens deps failed (continuing)."
+  fi
+  if [[ -r "${SECFORGE_ROOT}/tools/apkdeeplens/APKDeepLens.py" ]]; then
+    cat >"${SECFORGE_ROOT}/bin/apkdeeplens" <<AEOF
+#!/usr/bin/env bash
+exec "${venv}/bin/python" "${SECFORGE_ROOT}/tools/apkdeeplens/APKDeepLens.py" "\$@"
+AEOF
+    chmod 0755 "${SECFORGE_ROOT}/bin/apkdeeplens"
+  fi
+}
+
+install_apkhunt() {
+  sf_apt_install golang-go
+  sf_git_clone_or_update "https://github.com/Cyber-Buddy/APKHunt.git" "${SECFORGE_ROOT}/tools/apkhunt"
+  if [[ -d "${SECFORGE_ROOT}/tools/apkhunt" ]]; then
+    sf_log "Building APKHunt binary..."
+    if [[ -r "${SECFORGE_ROOT}/tools/apkhunt/apkhunt.go" ]]; then
+      (cd "${SECFORGE_ROOT}/tools/apkhunt" && go build -o "${SECFORGE_ROOT}/bin/apkhunt" "./apkhunt.go") || sf_warn "APKHunt build failed"
+    else
+      (cd "${SECFORGE_ROOT}/tools/apkhunt" && go build -o "${SECFORGE_ROOT}/bin/apkhunt" ./...) || sf_warn "APKHunt build failed"
+    fi
+    chmod 0755 "${SECFORGE_ROOT}/bin/apkhunt" 2>/dev/null || true
+  fi
+}
+
+install_jadx() {
+  sf_apt_install unzip
+  local jadx_dir="${SECFORGE_ROOT}/tools/jadx"
+  if [[ ! -x "${jadx_dir}/bin/jadx" ]]; then
+    sf_log "Installing jadx (Java decompiler for APK analysis)..."
+    if ! sf_has_cmd jq; then
+      sf_die "jq is required to install jadx (GitHub API)."
+    fi
+    local jadx_tmp jadx_url
+    jadx_tmp="$(sf_mktemp_dir)"
+    jadx_url="$(sf_github_latest_release_json "skylot/jadx" | jq -r '
+      [.assets[] | select(.name | test("jadx.*\\.zip$"; "i")) | select(.name | test("no-jre"; "i") | not)] | .[0].browser_download_url
+    ')"
+    if [[ -n "${jadx_url}" && "${jadx_url}" != "null" ]]; then
+      sf_curl -o "${jadx_tmp}/jadx.zip" "${jadx_url}"
+      mkdir -p "${jadx_dir}"
+      unzip -q -o "${jadx_tmp}/jadx.zip" -d "${jadx_dir}"
+      chmod +x "${jadx_dir}/bin/jadx" 2>/dev/null || true
+      sf_ln_sf "${jadx_dir}/bin/jadx" "${SECFORGE_ROOT}/bin/jadx"
+    else
+      sf_warn "Could not find jadx release asset."
+    fi
+    rm -rf "${jadx_tmp}"
+  else
+    sf_ln_sf "${jadx_dir}/bin/jadx" "${SECFORGE_ROOT}/bin/jadx"
+  fi
+}
+
+install_stripe_check() {
+  local venv="${SECFORGE_ROOT}/venv/stripe-check"
+  sf_ensure_venv "${venv}"
+  sf_install_venv_packages "${venv}" requests beautifulsoup4 || sf_warn "Failed to install stripe-check dependencies (requests, beautifulsoup4)"
+  if [[ -r "${SECFORGE_ROOT}/scripts/stripe-check.py" ]]; then
+    cat >"${SECFORGE_ROOT}/bin/stripe-check" <<SEOF
+#!/usr/bin/env bash
+exec "${venv}/bin/python" "${SECFORGE_ROOT}/scripts/stripe-check.py" "\$@"
+SEOF
+    chmod 0755 "${SECFORGE_ROOT}/bin/stripe-check"
+  else
+    sf_warn "Missing ${SECFORGE_ROOT}/scripts/stripe-check.py; stripe-check will be unavailable."
+  fi
+}
+
+install_wordlists() {
+  sf_download_wordlists "${SECFORGE_ROOT}"
+}
+
 # ── Install a single tool ────────────────────────────────────────────
 
 install_single_tool() {
@@ -752,4 +977,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
