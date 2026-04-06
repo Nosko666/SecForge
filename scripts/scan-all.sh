@@ -40,11 +40,17 @@ sf_cleanup_bg() {
     SF_MANIFEST_TOOLS_RUN="$(IFS=,; echo "${_SF_TOOLS_RUN[*]:-}")" \
     SF_MANIFEST_TOOLS_FAILED="$(IFS=,; echo "${_SF_TOOLS_FAILED[*]:-}")" \
     SF_MANIFEST_TOOL_DURATIONS="$(IFS=,; echo "${_SF_TOOL_DURATIONS[*]:-}")" \
+    SF_MANIFEST_PROFILE="${SECFORGE_STACK_PROFILE:-}" \
+    SF_MANIFEST_TIER_MAX="${SECFORGE_TIER_MAX:-1}" \
     sf_write_manifest "${SECFORGE_SESSION_DIR}" "full" 2>/dev/null || true
   fi
 
   if [[ "${ZAP_STARTED}" == "1" && -n "${ZAP_API_BASE}" ]] && command -v curl >/dev/null 2>&1; then
     curl -fsS "${ZAP_API_BASE}/JSON/core/action/shutdown/" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -n "${INTERACTSH_PID:-}" ]] && [[ "${_INTERACTSH_RECORDED:-0}" != "1" ]]; then
+    sf_emit_dashboard_event "{\"event\":\"tool_fail\",\"tool\":\"interactsh\",\"index\":${_INTERACTSH_INDEX:-0},\"error\":\"interrupted\"}"
   fi
 
   sf_kill_pid "${INTERACTSH_PID}"
@@ -388,6 +394,11 @@ main() {
   if [[ "${SECFORGE_TARGET_HOST}" != "this_server" ]]; then
     if sf_should_run_tool "interactsh" && [[ -z "${INTERACTSH_PID}" ]] && sf_tool interactsh-client >/dev/null 2>&1; then
       sf_log "Starting interactsh-client (OOB callbacks)..."
+      ((_sf_tool_index++)) || true
+      _INTERACTSH_INDEX="${_sf_tool_index}"
+      _INTERACTSH_START_TS="$(date +%s)"
+      _INTERACTSH_RECORDED=0
+      sf_emit_dashboard_event "{\"event\":\"tool_start\",\"tool\":\"interactsh\",\"index\":${_sf_tool_index}}"
       "$(sf_tool interactsh-client)" -json -o "${SECFORGE_SESSION_DIR}/api/interactsh.json" >"${SECFORGE_SESSION_DIR}/api/interactsh.log" 2>"${SECFORGE_SESSION_DIR}/api/interactsh.log.err" &
       INTERACTSH_PID=$!
       _SF_TOOLS_RUN+=("interactsh")
@@ -434,12 +445,20 @@ main() {
 
     if sf_should_run_tool "observatory" && sf_tool observatory >/dev/null 2>&1; then
       _SF_TOOLS_RUN+=("observatory")
+      ((_sf_tool_index++)) || true
+      sf_emit_dashboard_event "{\"event\":\"tool_start\",\"tool\":\"observatory\",\"index\":${_sf_tool_index}}"
+      local _observatory_start="$(date +%s)"
       sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/ssl/observatory.json" "$(sf_tool observatory)" --format json "${SECFORGE_TARGET_URL}" || true
       if [[ ! -s "${SECFORGE_SESSION_DIR}/ssl/observatory.json" ]]; then
         sf_run "${timeout_web}" "${SECFORGE_SESSION_DIR}/ssl/observatory.json" "$(sf_tool observatory)" scan --format json "${SECFORGE_TARGET_URL}" || true
       fi
+      local _observatory_dur=$(( $(date +%s) - _observatory_start ))
+      _SF_TOOL_DURATIONS+=("observatory:${_observatory_dur}")
       if [[ ! -s "${SECFORGE_SESSION_DIR}/ssl/observatory.json" ]]; then
         _SF_TOOLS_FAILED+=("observatory")
+        sf_emit_dashboard_event "{\"event\":\"tool_fail\",\"tool\":\"observatory\",\"index\":${_sf_tool_index},\"error\":\"empty output\"}"
+      else
+        sf_emit_dashboard_event "{\"event\":\"tool_done\",\"tool\":\"observatory\",\"index\":${_sf_tool_index},\"duration\":${_observatory_dur},\"findings\":0,\"status\":\"ok\"}"
       fi
     fi
 
@@ -515,6 +534,9 @@ main() {
       sudo_policy="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "ALLOW_SUDO_TOOLS" || true)"
       sudo_policy="${sudo_policy:-ask}"
       _SF_TOOLS_RUN+=("masscan")
+      ((_sf_tool_index++)) || true
+      sf_emit_dashboard_event "{\"event\":\"tool_start\",\"tool\":\"masscan\",\"index\":${_sf_tool_index}}"
+      local _masscan_start="$(date +%s)"
       if [[ "${EUID}" -eq 0 ]]; then
         sf_run "${timeout_portscan}" "${SECFORGE_SESSION_DIR}/network/masscan.log" "$(sf_tool masscan)" "${SECFORGE_TARGET_HOST}" -p0-65535 --rate=1000 -oJ "${SECFORGE_SESSION_DIR}/network/masscan.json"
       elif [[ "${sudo_policy}" == "never" ]]; then
@@ -528,8 +550,13 @@ main() {
           _SF_TOOLS_FAILED+=("masscan")
         fi
       fi
+      local _masscan_dur=$(( $(date +%s) - _masscan_start ))
+      _SF_TOOL_DURATIONS+=("masscan:${_masscan_dur}")
       if [[ ! -s "${SECFORGE_SESSION_DIR}/network/masscan.json" ]]; then
         _SF_TOOLS_FAILED+=("masscan")
+        sf_emit_dashboard_event "{\"event\":\"tool_fail\",\"tool\":\"masscan\",\"index\":${_sf_tool_index},\"error\":\"empty output\"}"
+      else
+        sf_emit_dashboard_event "{\"event\":\"tool_done\",\"tool\":\"masscan\",\"index\":${_sf_tool_index},\"duration\":${_masscan_dur},\"findings\":0,\"status\":\"ok\"}"
       fi
     fi
   fi
@@ -568,6 +595,9 @@ main() {
     sudo_policy="$(sf_cfg_get_value "${SECFORGE_CONFIG_FILE}" "ALLOW_SUDO_TOOLS" || true)"
     sudo_policy="${sudo_policy:-ask}"
     _SF_TOOLS_RUN+=("trivy")
+    ((_sf_tool_index++)) || true
+    sf_emit_dashboard_event "{\"event\":\"tool_start\",\"tool\":\"trivy\",\"index\":${_sf_tool_index}}"
+    local _trivy_start="$(date +%s)"
 
     if [[ "${EUID}" -eq 0 ]]; then
       sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.log" "$(sf_tool trivy)" rootfs --format json --output "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.json" /
@@ -582,8 +612,13 @@ main() {
     else
       sf_run "${timeout_hardening}" "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.log" "$(sf_tool trivy)" rootfs --format json --output "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.json" /
     fi
+    local _trivy_dur=$(( $(date +%s) - _trivy_start ))
+    _SF_TOOL_DURATIONS+=("trivy:${_trivy_dur}")
     if [[ ! -s "${SECFORGE_SESSION_DIR}/hardening/trivy-rootfs.json" ]]; then
       _SF_TOOLS_FAILED+=("trivy")
+      sf_emit_dashboard_event "{\"event\":\"tool_fail\",\"tool\":\"trivy\",\"index\":${_sf_tool_index},\"error\":\"empty output\"}"
+    else
+      sf_emit_dashboard_event "{\"event\":\"tool_done\",\"tool\":\"trivy\",\"index\":${_sf_tool_index},\"duration\":${_trivy_dur},\"findings\":0,\"status\":\"ok\"}"
     fi
   fi
 
@@ -599,6 +634,9 @@ main() {
   if [[ -n "${SECFORGE_CODE_PATH}" ]]; then
     if sf_should_run_tool "trufflehog" && sf_tool trufflehog >/dev/null 2>&1; then
       _SF_TOOLS_RUN+=("trufflehog")
+      ((_sf_tool_index++)) || true
+      sf_emit_dashboard_event "{\"event\":\"tool_start\",\"tool\":\"trufflehog\",\"index\":${_sf_tool_index}}"
+      local _trufflehog_start="$(date +%s)"
       local _th_raw
       _th_raw="$(mktemp /tmp/secforge-trufflehog-raw.XXXXXX)"
       chmod 0600 "${_th_raw}"
@@ -606,8 +644,13 @@ main() {
       if [[ -s "${_th_raw}" ]] && [[ -r "${SCRIPT_DIR}/sanitize-trufflehog.py" ]]; then
         python3 "${SCRIPT_DIR}/sanitize-trufflehog.py" "${_th_raw}" "${SECFORGE_SESSION_DIR}/secrets/trufflehog.json" 2>/dev/null || sf_warn "TruffleHog sanitization failed"
       fi
+      local _trufflehog_dur=$(( $(date +%s) - _trufflehog_start ))
+      _SF_TOOL_DURATIONS+=("trufflehog:${_trufflehog_dur}")
       if [[ ! -s "${SECFORGE_SESSION_DIR}/secrets/trufflehog.json" ]]; then
         _SF_TOOLS_FAILED+=("trufflehog")
+        sf_emit_dashboard_event "{\"event\":\"tool_fail\",\"tool\":\"trufflehog\",\"index\":${_sf_tool_index},\"error\":\"empty output\"}"
+      else
+        sf_emit_dashboard_event "{\"event\":\"tool_done\",\"tool\":\"trufflehog\",\"index\":${_sf_tool_index},\"duration\":${_trufflehog_dur},\"findings\":0,\"status\":\"ok\"}"
       fi
       rm -f "${_th_raw}" "${_th_raw}.err" 2>/dev/null || true
     fi
@@ -626,75 +669,98 @@ main() {
   # Tier 2 (explicit opt-in)
   # ---------------------------
   if [[ "${SECFORGE_TARGET_HOST}" != "this_server" ]]; then
-    sf_emit_dashboard_event "{\"event\":\"tier2_prompt\",\"message\":\"Type YES in the main pane\"}"
-    if sf_tier2_opt_in; then
-      sf_emit_dashboard_event "{\"event\":\"tier2_approved\"}"
-      sf_circuit_breaker_check "${SECFORGE_TARGET_URL}" "${threshold}" "${cooldown}"
+    if [[ "${SECFORGE_TIER_MAX:-1}" -ge 2 ]]; then
+      sf_emit_dashboard_event "{\"event\":\"tier2_prompt\",\"message\":\"Type YES in the main pane\"}"
+      if sf_tier2_opt_in; then
+        sf_emit_dashboard_event "{\"event\":\"tier2_approved\"}"
+        sf_circuit_breaker_check "${SECFORGE_TARGET_URL}" "${threshold}" "${cooldown}"
 
-      if sf_should_run_tool "zap"; then
-        _SF_TOOLS_RUN+=("zap")
-        sf_zap_active_scan "${SECFORGE_TARGET_URL}" "${SECFORGE_SESSION_DIR}/webapp/zap.json" "${SECFORGE_SESSION_DIR}/webapp/zap.log" "${timeout_zap}"
-        if [[ ! -s "${SECFORGE_SESSION_DIR}/webapp/zap.json" ]]; then
-          _SF_TOOLS_FAILED+=("zap")
-        fi
-      fi
-
-      if sf_should_run_tool "sqlmap" && sf_tool sqlmap >/dev/null 2>&1; then
-        mkdir -p "${SECFORGE_SESSION_DIR}/webapp/sqlmap"
-        sf_track_run sqlmap "${SECFORGE_SESSION_DIR}/webapp/sqlmap/sqlmap.log" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/sqlmap/sqlmap.log" "$(sf_tool sqlmap)" -u "${SECFORGE_TARGET_URL}" --batch --forms --crawl=3 --output-dir="${SECFORGE_SESSION_DIR}/webapp/sqlmap"
-      fi
-
-      if sf_should_run_tool "dalfox" && sf_tool dalfox >/dev/null 2>&1; then
-        sf_track_run dalfox "${SECFORGE_SESSION_DIR}/webapp/dalfox.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/dalfox.log" "$(sf_tool dalfox)" url "${SECFORGE_TARGET_URL}" -o "${SECFORGE_SESSION_DIR}/webapp/dalfox.json" --format json
-      fi
-
-      if sf_should_run_tool "xsstrike" && sf_tool xsstrike >/dev/null 2>&1; then
-        sf_track_run xsstrike "${SECFORGE_SESSION_DIR}/webapp/xsstrike.log" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/xsstrike.log" "$(sf_tool xsstrike)" -u "${SECFORGE_TARGET_URL}" --crawl || true
-      fi
-
-      if sf_should_run_tool "commix" && sf_tool commix >/dev/null 2>&1; then
-        mkdir -p "${SECFORGE_SESSION_DIR}/webapp/commix"
-        sf_track_run commix "${SECFORGE_SESSION_DIR}/webapp/commix.log" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/commix.log" "$(sf_tool commix)" --url="${SECFORGE_TARGET_URL}" --batch --output-dir="${SECFORGE_SESSION_DIR}/webapp/commix"
-      fi
-
-      if sf_should_run_tool "wapiti" && sf_tool wapiti >/dev/null 2>&1; then
-        sf_track_run wapiti "${SECFORGE_SESSION_DIR}/webapp/wapiti.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/wapiti.log" "$(sf_tool wapiti)" -u "${SECFORGE_TARGET_URL}" -f json -o "${SECFORGE_SESSION_DIR}/webapp/wapiti.json"
-      fi
-
-      if sf_should_run_tool "hydra" || sf_should_run_tool "netexec"; then
-        if sf_ask_tty_yes "Run SSH credential checks (Hydra/NetExec) against ${SECFORGE_TARGET_HOST}? Type YES to continue:" "YES"; then
-          local pw_list ssh_user ssh_users_file
-          pw_list="${SECFORGE_ROOT}/wordlists/passwords-top1000.txt"
-          ssh_user="${SECFORGE_SSH_USER:-}"
-          ssh_users_file="${SECFORGE_SSH_USERS_FILE:-}"
-
-          if [[ ! -r "${pw_list}" ]]; then
-            sf_warn "Password list missing: ${pw_list} (skipping Hydra/NetExec)."
-          elif [[ -n "${ssh_user}" || ( -n "${ssh_users_file}" && -r "${ssh_users_file}" ) ]]; then
-            if sf_should_run_tool "hydra" && sf_tool hydra >/dev/null 2>&1; then
-              if [[ -n "${ssh_user}" ]]; then
-                sf_track_run hydra "${SECFORGE_SESSION_DIR}/passwords/hydra.txt" 600 "${SECFORGE_SESSION_DIR}/passwords/hydra.txt" "$(sf_tool hydra)" -l "${ssh_user}" -P "${pw_list}" "${SECFORGE_TARGET_HOST}" ssh
-              else
-                sf_track_run hydra "${SECFORGE_SESSION_DIR}/passwords/hydra.txt" 600 "${SECFORGE_SESSION_DIR}/passwords/hydra.txt" "$(sf_tool hydra)" -L "${ssh_users_file}" -P "${pw_list}" "${SECFORGE_TARGET_HOST}" ssh
-              fi
-            fi
-
-            if sf_should_run_tool "netexec" && sf_tool nxc >/dev/null 2>&1; then
-              if [[ -n "${ssh_user}" ]]; then
-                sf_track_run netexec "${SECFORGE_SESSION_DIR}/passwords/netexec.txt" 600 "${SECFORGE_SESSION_DIR}/passwords/netexec.txt" "$(sf_tool nxc)" ssh "${SECFORGE_TARGET_HOST}" -u "${ssh_user}" -p "${pw_list}"
-              else
-                sf_track_run netexec "${SECFORGE_SESSION_DIR}/passwords/netexec.txt" 600 "${SECFORGE_SESSION_DIR}/passwords/netexec.txt" "$(sf_tool nxc)" ssh "${SECFORGE_TARGET_HOST}" -u "${ssh_users_file}" -p "${pw_list}"
-              fi
-            fi
+        if sf_should_run_tool "zap"; then
+          _SF_TOOLS_RUN+=("zap")
+          ((_sf_tool_index++)) || true
+          sf_emit_dashboard_event "{\"event\":\"tool_start\",\"tool\":\"zap\",\"index\":${_sf_tool_index}}"
+          local _zap_start="$(date +%s)"
+          sf_zap_active_scan "${SECFORGE_TARGET_URL}" "${SECFORGE_SESSION_DIR}/webapp/zap.json" "${SECFORGE_SESSION_DIR}/webapp/zap.log" "${timeout_zap}"
+          local _zap_dur=$(( $(date +%s) - _zap_start ))
+          _SF_TOOL_DURATIONS+=("zap:${_zap_dur}")
+          if [[ ! -s "${SECFORGE_SESSION_DIR}/webapp/zap.json" ]]; then
+            _SF_TOOLS_FAILED+=("zap")
+            sf_emit_dashboard_event "{\"event\":\"tool_fail\",\"tool\":\"zap\",\"index\":${_sf_tool_index},\"error\":\"empty output\"}"
           else
-            sf_warn "Set SECFORGE_SSH_USER or SECFORGE_SSH_USERS_FILE to enable Hydra/NetExec (skipping)."
+            sf_emit_dashboard_event "{\"event\":\"tool_done\",\"tool\":\"zap\",\"index\":${_sf_tool_index},\"duration\":${_zap_dur},\"findings\":0,\"status\":\"ok\"}"
           fi
         fi
+
+        if sf_should_run_tool "sqlmap" && sf_tool sqlmap >/dev/null 2>&1; then
+          mkdir -p "${SECFORGE_SESSION_DIR}/webapp/sqlmap"
+          sf_track_run sqlmap "${SECFORGE_SESSION_DIR}/webapp/sqlmap/sqlmap.log" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/sqlmap/sqlmap.log" "$(sf_tool sqlmap)" -u "${SECFORGE_TARGET_URL}" --batch --forms --crawl=3 --output-dir="${SECFORGE_SESSION_DIR}/webapp/sqlmap"
+        fi
+
+        if sf_should_run_tool "dalfox" && sf_tool dalfox >/dev/null 2>&1; then
+          sf_track_run dalfox "${SECFORGE_SESSION_DIR}/webapp/dalfox.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/dalfox.log" "$(sf_tool dalfox)" url "${SECFORGE_TARGET_URL}" -o "${SECFORGE_SESSION_DIR}/webapp/dalfox.json" --format json
+        fi
+
+        if sf_should_run_tool "xsstrike" && sf_tool xsstrike >/dev/null 2>&1; then
+          sf_track_run xsstrike "${SECFORGE_SESSION_DIR}/webapp/xsstrike.log" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/xsstrike.log" "$(sf_tool xsstrike)" -u "${SECFORGE_TARGET_URL}" --crawl || true
+        fi
+
+        if sf_should_run_tool "commix" && sf_tool commix >/dev/null 2>&1; then
+          mkdir -p "${SECFORGE_SESSION_DIR}/webapp/commix"
+          sf_track_run commix "${SECFORGE_SESSION_DIR}/webapp/commix.log" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/commix.log" "$(sf_tool commix)" --url="${SECFORGE_TARGET_URL}" --batch --output-dir="${SECFORGE_SESSION_DIR}/webapp/commix"
+        fi
+
+        if sf_should_run_tool "wapiti" && sf_tool wapiti >/dev/null 2>&1; then
+          sf_track_run wapiti "${SECFORGE_SESSION_DIR}/webapp/wapiti.json" "${timeout_web}" "${SECFORGE_SESSION_DIR}/webapp/wapiti.log" "$(sf_tool wapiti)" -u "${SECFORGE_TARGET_URL}" -f json -o "${SECFORGE_SESSION_DIR}/webapp/wapiti.json"
+        fi
+
+        if sf_should_run_tool "hydra" || sf_should_run_tool "netexec"; then
+          if sf_ask_tty_yes "Run SSH credential checks (Hydra/NetExec) against ${SECFORGE_TARGET_HOST}? Type YES to continue:" "YES"; then
+            local pw_list ssh_user ssh_users_file
+            pw_list="${SECFORGE_ROOT}/wordlists/passwords-top1000.txt"
+            ssh_user="${SECFORGE_SSH_USER:-}"
+            ssh_users_file="${SECFORGE_SSH_USERS_FILE:-}"
+
+            if [[ ! -r "${pw_list}" ]]; then
+              sf_warn "Password list missing: ${pw_list} (skipping Hydra/NetExec)."
+            elif [[ -n "${ssh_user}" || ( -n "${ssh_users_file}" && -r "${ssh_users_file}" ) ]]; then
+              if sf_should_run_tool "hydra" && sf_tool hydra >/dev/null 2>&1; then
+                if [[ -n "${ssh_user}" ]]; then
+                  sf_track_run hydra "${SECFORGE_SESSION_DIR}/passwords/hydra.txt" 600 "${SECFORGE_SESSION_DIR}/passwords/hydra.txt" "$(sf_tool hydra)" -l "${ssh_user}" -P "${pw_list}" "${SECFORGE_TARGET_HOST}" ssh
+                else
+                  sf_track_run hydra "${SECFORGE_SESSION_DIR}/passwords/hydra.txt" 600 "${SECFORGE_SESSION_DIR}/passwords/hydra.txt" "$(sf_tool hydra)" -L "${ssh_users_file}" -P "${pw_list}" "${SECFORGE_TARGET_HOST}" ssh
+                fi
+              fi
+
+              if sf_should_run_tool "netexec" && sf_tool nxc >/dev/null 2>&1; then
+                if [[ -n "${ssh_user}" ]]; then
+                  sf_track_run netexec "${SECFORGE_SESSION_DIR}/passwords/netexec.txt" 600 "${SECFORGE_SESSION_DIR}/passwords/netexec.txt" "$(sf_tool nxc)" ssh "${SECFORGE_TARGET_HOST}" -u "${ssh_user}" -p "${pw_list}"
+                else
+                  sf_track_run netexec "${SECFORGE_SESSION_DIR}/passwords/netexec.txt" 600 "${SECFORGE_SESSION_DIR}/passwords/netexec.txt" "$(sf_tool nxc)" ssh "${SECFORGE_TARGET_HOST}" -u "${ssh_users_file}" -p "${pw_list}"
+                fi
+              fi
+            else
+              sf_warn "Set SECFORGE_SSH_USER or SECFORGE_SSH_USERS_FILE to enable Hydra/NetExec (skipping)."
+            fi
+          fi
+        fi
+      else
+        sf_emit_dashboard_event "{\"event\":\"tier2_skipped\"}"
+        sf_log "Tier 2 skipped."
       fi
     else
+      sf_log "Tier 2 skipped (TIER_MAX=${SECFORGE_TIER_MAX:-1})."
       sf_emit_dashboard_event "{\"event\":\"tier2_skipped\"}"
-      sf_log "Tier 2 skipped."
     fi
+  fi
+
+  # Gracefully close interactsh and record before manifest
+  if [[ -n "${INTERACTSH_PID:-}" ]] && [[ "${_INTERACTSH_RECORDED:-0}" != "1" ]]; then
+    sf_kill_pid "${INTERACTSH_PID}"
+    local _interactsh_dur=$(( $(date +%s) - ${_INTERACTSH_START_TS:-0} ))
+    _SF_TOOL_DURATIONS+=("interactsh:${_interactsh_dur}")
+    sf_emit_dashboard_event "{\"event\":\"tool_done\",\"tool\":\"interactsh\",\"index\":${_INTERACTSH_INDEX:-0},\"duration\":${_interactsh_dur},\"findings\":0,\"status\":\"ok\"}"
+    INTERACTSH_PID=""
+    _INTERACTSH_RECORDED=1
   fi
 
   # Write scan manifest before merging

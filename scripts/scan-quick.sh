@@ -156,6 +156,8 @@ main() {
       SF_MANIFEST_TOOLS_RUN="$(IFS=,; echo "${_SF_TOOLS_RUN[*]:-}")" \
       SF_MANIFEST_TOOLS_FAILED="$(IFS=,; echo "${_SF_TOOLS_FAILED[*]:-}")" \
       SF_MANIFEST_TOOL_DURATIONS="$(IFS=,; echo "${_SF_TOOL_DURATIONS[*]:-}")" \
+      SF_MANIFEST_PROFILE="${SECFORGE_STACK_PROFILE:-}" \
+      SF_MANIFEST_TIER_MAX="${SECFORGE_TIER_MAX:-1}" \
       sf_write_manifest "${SECFORGE_SESSION_DIR}" "quick" 2>/dev/null || true
     fi
   ' EXIT
