@@ -476,6 +476,10 @@ try:
     TIER_MAX = int(tier_max_str)
 except (ValueError, TypeError):
     TIER_MAX = 1  # safe default
+# Clamp to valid range (1 or 2) — defense in depth against bad config values
+if TIER_MAX not in (1, 2):
+    warn(f"TIER_MAX={TIER_MAX} out of range (must be 1 or 2); clamping to 1")
+    TIER_MAX = 1
 
 
 # ── Stack detection ──────────────────────────────────────────────────

@@ -116,7 +116,9 @@ case "${cmd}" in
         --stack) export SECFORGE_STACK="${2:-}"; shift 2 ;;
         --skip) export SECFORGE_SKIP="${2:-}"; shift 2 ;;
         --code-path) export SECFORGE_CODE_PATH="${2:-}"; shift 2 ;;
-        --tier) export SECFORGE_TIER_OVERRIDE="${2:-}"; shift 2 ;;
+        --tier)
+          [[ "${2:-}" == "1" || "${2:-}" == "2" ]] || sf_die "--tier must be 1 or 2 (got: ${2:-empty})"
+          export SECFORGE_TIER_OVERRIDE="${2}"; shift 2 ;;
         --dashboard) _sf_dashboard=1; shift ;;
         -*) sf_die "Unknown scan flag: $1" ;;
         *) _sf_target="$1"; shift ;;
@@ -607,7 +609,9 @@ state.close()
         --environment) _sf_env="${2:-}"; shift 2 ;;
         --payments) _sf_payments="${2:-}"; shift 2 ;;
         --admin-ip) _sf_admin_ip="${2:-}"; shift 2 ;;
-        --tier) _sf_tier="${2:-}"; shift 2 ;;
+        --tier)
+          [[ "${2:-}" == "1" || "${2:-}" == "2" ]] || sf_die "--tier must be 1 or 2 (got: ${2:-empty})"
+          _sf_tier="${2}"; shift 2 ;;
         --reset) _sf_reset=1; shift ;;
         -h|--help) echo "Usage: secforge init [--domain <d>] [--environment prod|staging] [--payments yes|no] [--admin-ip <ip>] [--tier 1|2] [--reset]"; exit 0 ;;
         *) sf_die "Unknown init flag: $1" ;;
