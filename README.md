@@ -7,7 +7,7 @@ Free, open-source security toolkit built for vibecoders. You talk to Claude or C
 You say **"scan my site"** to your AI assistant. SecForge:
 
 1. **Detects your stack** (Node+Nginx? WordPress? Python+Django?) and picks the right tools
-2. **Runs 51 security scanners** (network, web, SSL, secrets, dependencies, server hardening)
+2. **Runs 57 security tools** (network, web, SSL, secrets, dependencies, server hardening)
 3. **Groups findings into fix packs** — "Fix your HTTP headers (12 issues, easy)" instead of 200 raw warnings
 4. **Scores priorities** — critical stuff first, with plain English explanations
 5. **Tracks progress** — rescan after fixing and it shows what's fixed, what's new, what came back
@@ -116,7 +116,7 @@ You: "scan my site"
   Tool selection (profile + installedness + tier gating)
         |
         v
-  51 tools run (each gated by profile, skipped if missing)
+  57 tools run (each gated by profile, skipped if missing)
         |
         v
   Parse → Fingerprint → Dedup → Cluster → Score → Fix Packs
@@ -176,7 +176,7 @@ Each tool knows how to install itself (apt, GitHub binary, git clone, pip venv).
 
 Or let the AI pick: it reads your stack profile and suggests exactly what you need.
 
-## 51 Security Tools
+## 57 Security Tools
 
 Organized by what they check:
 

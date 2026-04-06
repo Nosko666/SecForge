@@ -1,6 +1,6 @@
 # SecForge Vibecoder UX Implementation Plan (v2 — corrected)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Status: IMPLEMENTED** — 22 commits on main (2026-04-06), 4 fix rounds, 17/17 Hetzner tests pass, 19/20 success criteria pass.
 
 **Goal:** Transform SecForge from raw bash scripts into an AI-guided, visually polished security workflow with stack profiles, time estimates, guided onboarding, and a live tmux dashboard.
 
@@ -11,6 +11,36 @@
 **Design spec:** `docs/superpowers/specs/2026-04-05-vibecoder-ux-design.md`
 
 **Test server:** Hetzner `116.203.191.42` (Ubuntu 24.04, SSH key auth, testuser in secforge group)
+
+## Implementation Status (2026-04-06)
+
+| Task | Status | Commits |
+|------|--------|---------|
+| 1. Validate catalog/tools.json | DONE | `424a951` |
+| 2. Validate catalog/profiles.json | DONE | `424a951` |
+| 3. Shared helpers in _lib.sh | DONE | `6dfa0ce` |
+| 4. Preflight.sh single planner | DONE | `6319a17` + fixes |
+| 5. Fix scan scripts | DONE | `6ec1880` + `b5ab706` + fixes |
+| 6. Create install-tools.sh | DONE | `9887fcd` + `4dffbeb` |
+| 7. Create bootstrap.sh | DONE | `88e7a34` |
+| 8. Update bin/secforge | DONE | `9b3efbb` + fixes |
+| 9. Rework install.sh | DONE | `0691abd` |
+| 10. Update config example | DONE | `d5a027a` |
+| 11. Create dashboard.sh | DONE | `ccbe11d` + fixes |
+| 12. Update CLAUDE.md | DONE | `bf31dab` + `7957776` |
+| 13. Integration test plan | DEFERRED | Hetzner tests ran manually |
+
+### Fix Rounds Applied
+- **Round 1** (`1556fee`): 9 spec compliance issues (catalogs, events, scan_done timing, scan_mode, skip enforcement, dashboard blocking, selection format, manifest fields, --stack-hints)
+- **Round 2** (`f6f6441`): 9 critical gaps (flag wiring, TOOLS_EFFECTIVE, preflight.json, "all"→"full", close fallback, builtin events, check-mysql, install events, selection naming)
+- **Round 3** (`b5ab706`, `4dffbeb`, `0edac45`): TIER_MAX guard, 6 bypass tool events+durations, EXIT trap fields, 11 custom installers, install/verify dashboard events, estimator chain, interactsh cleanup
+- **Final** (`f3bce8d`, `2a4cf0a`, `0054505`, `1b69d74`, `7957776`): Missing import, masscan dedup, deprecated API, log messages, profile in findings.json, install dashboard completion, stale doc example
+
+### Deferred Items (Round 4)
+1. **Rich stack_detection** in preflight.json — spec wants score/threshold/signals for explainability
+2. **Scan-mode toolset intersection** — tools_planned vs what scan-quick.sh actually runs
+3. **secforge init --tier** — write TIER_MAX from init wizard
+4. **Combined estimate display** — "N tools, ~M min" string + "first scan — rough estimates" qualifier
 
 ---
 
