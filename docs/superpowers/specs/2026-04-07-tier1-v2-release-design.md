@@ -49,50 +49,89 @@ The README gets a brief "Why no curl-pipe?" callout explaining the security rati
 
 **Problem:** `install.sh` clones whatever is on `main`. Users installing today vs. tomorrow can get different code with no version anchor. `update-all.sh` does `git pull --ff-only` with no tag enforcement.
 
-**Solution:** Both `install.sh` and `update-all.sh` get version pinning:
+**Solution:** All three entry points (`install.sh`, `update-all.sh`, and `bin/secforge update`) get version pinning:
 
 - New env var `SECFORGE_VERSION` (default: latest tag matching `v[0-9]*` from `git tag -l | sort -V | tail -1`)
 - New CLI flag `--version v2.0.0` as alias for the env var
-- After clone, do `git fetch --tags origin` then `git checkout "${SECFORGE_VERSION}"`
+- After clone/fetch, do `git fetch --tags origin` then `git checkout "${SECFORGE_VERSION}"`
 - Fail closed with a clear error if the requested version doesn't exist as a tag
+- **No silent fallback to main:** If `git tag -l` returns nothing AND `SECFORGE_VERSION` is unset, fail with clear message ("No tagged releases found. Set SECFORGE_VERSION explicitly or use --version main to opt in to bleeding edge.")
 - `update-all.sh` no longer does bare `git pull` — requires explicit version selection
+- `bin/secforge update` accepts `--version <tag>` and forwards it to `update-all.sh`
 
 This means installs are reproducible and auditable. Users know exactly what version they ran.
 
-### 1.3 SHA-256 verification for GitHub release binaries
+### 1.3 SHA-256 verification for GitHub release downloads
 
-**Problem:** `sf_install_github_release_binary` in `_lib.sh` downloads tool binaries (nuclei, ffuf, gum, etc.) from GitHub releases without verifying checksums. The current code explicitly filters out `.sha256` and `.sig` files when picking the asset URL — verification metadata is being discarded instead of used. This is the highest-leverage security fix in this release.
+**Problem:** `sf_install_github_release_binary` in `_lib.sh` downloads release archives (nuclei, ffuf, gum, etc.) from GitHub without verifying checksums. The current code explicitly filters out `.sha256` and `.sig` files when picking the asset URL — verification metadata is being discarded instead of used. This is the highest-leverage security fix in this release.
 
-**Solution:** Modify `sf_install_github_release_binary` to:
+**Solution:** Modify `sf_install_github_release_binary` to verify the **downloaded asset** (the .tar.gz / .zip / single binary that GitHub serves), NOT the binary extracted from inside it. Upstream checksum files always hash the asset filename as published, not what's inside.
 
-1. After selecting the binary asset URL, look for a checksum asset in the same release. Try (in order):
+1. After selecting the asset URL (binary or archive), look for a checksum asset in the same release. Try (in order):
    - `checksums.txt`
-   - `<binary>_checksums.txt`
-   - `<binary>.sha256`
+   - `<asset_basename>_checksums.txt`
+   - `<asset_basename>.sha256`
    - `SHA256SUMS`
-2. Download both the binary and its checksum file.
-3. Compute `sha256sum` of the downloaded binary.
-4. Parse the checksum file to find the matching line for the binary's filename.
-5. Compare. **Fail closed** (delete download, exit with error) if:
+2. Download the asset to a temp file (e.g., `/tmp/sf-download-XXXXXX/${asset_filename}`).
+3. Download the matching checksum file.
+4. Compute `sha256sum` of the downloaded asset (NOT the extracted binary).
+5. Parse the checksum file. Find the line matching the asset filename. Compare hashes.
+6. **Fail closed** (delete temp dir, exit with error) if:
    - No checksum file exists in the release
    - The matching line is missing from the checksum file
    - The hashes don't match
-6. Provide an escape hatch: `SECFORGE_SKIP_CHECKSUMS=1` env var bypasses verification with a loud `WARN` message. This is for users who explicitly opt out, NOT for tools that lack upstream checksums.
+7. Only AFTER verification passes, extract the archive and proceed with normal install.
 
-7. For tools that genuinely lack upstream checksums, add a per-tool `verify: "none"` field in `catalog/tools.json` with a justification comment. The installer reads this field and skips verification for those specific tools (still logs a `WARN`). This is hardcoded per-tool, not a global override.
+**Two escape hatches:**
 
-**Audit step (post-implementation):** Iterate every tool in `catalog/tools.json` with `install_method: github_release`. For each, verify upstream publishes checksums. Document the result in a comment. Tools with checksums get verified by default. Tools without get an explicit `verify: "none"` field with a TODO comment pointing to the upstream tracker.
+a) **Global opt-out (user choice):** `SECFORGE_SKIP_CHECKSUMS=1` env var bypasses verification with a loud `WARN` message on every download. For users who explicitly accept the risk.
 
-### 1.4 Tighten `.authorized_targets` permissions
+b) **Per-tool exception (catalog choice):** Tools that genuinely lack upstream checksums get a structured field in `catalog/tools.json`:
+```json
+"verify": {
+  "mode": "none",
+  "reason": "upstream does not publish checksums",
+  "tracking_url": "https://github.com/<repo>/issues/N"
+}
+```
+The installer reads this field, logs a `WARN`, and skips verification for that specific tool. Default mode is `"sha256"` (implicit if field missing).
 
-**Problem:** `_lib.sh` creates `config/.authorized_targets` with mode `0664` (group-writable). Any user in the `secforge` group can add unauthorized scan targets without going through the normal authorization prompt.
+**bootstrap.sh gum download:** Currently downloads gum directly via `sf_curl` outside `_lib.sh`'s github helper. This must ALSO verify checksums (charmbracelet publishes `gum_<version>_checksums.txt` for every release). Either refactor bootstrap.sh to use `sf_install_github_release_binary`, or add an inline checksum verification block. Same fail-closed semantics.
 
-**Solution:** Change the create mode to `0640`:
-- Owner: root, can read/write
-- Group: secforge, can read only
-- World: no access
+**Audit step (during implementation):** Iterate every tool in `catalog/tools.json` with `install_method: github_release`. For each, verify upstream publishes checksums. Tools with checksums use default `sha256` mode. Tools without get an explicit `verify: { "mode": "none", ... }` block with reason and tracking URL. Document the audit result in a separate file: `docs/security/checksum-audit-2026-04-07.md`.
 
-Adding new authorized targets goes through `secforge init --domain` (which writes as root) or the `sf_require_authorization` helper (which prompts the user and appends as root). Group members still get visibility but cannot self-authorize.
+### 1.4 Tighten `.authorized_targets` permissions (root-controlled authorization)
+
+**Problem:** `_lib.sh` creates `config/.authorized_targets` with mode `0664` (group-writable). Any user in the `secforge` group can add unauthorized scan targets without going through any review. Worse, `sf_require_authorization` currently appends to the file as the scan user (whoever is running the scan), assuming group-write — so non-root scans self-authorize new targets interactively.
+
+**Solution:** Switch to a root-controlled authorization model.
+
+1. **File creation:** `_lib.sh` creates `${SECFORGE_ROOT}/config/.authorized_targets` as `root:secforge` with mode `0640` (root: rw, secforge group: r, world: none).
+
+2. **Non-root scans cannot modify the file.** `sf_require_authorization` is updated:
+   - If the target is already in the file → proceed (existing behavior, group can read)
+   - If the target is NOT in the file → print a clear error and abort:
+     ```
+     [secforge] ERROR: Target 'example.com' not authorized.
+     [secforge] To authorize, run as root:
+     [secforge]   sudo secforge init --domain example.com
+     [secforge] Or for one-off:
+     [secforge]   echo 'example.com' | sudo tee -a /opt/secforge/config/.authorized_targets
+     ```
+   - No interactive prompt, no `read` from `/dev/tty`, no auto-sudo.
+
+3. **Root scans bypass the prompt:** When `EUID=0`, the existing append-as-root path still works (root can write the file directly).
+
+4. **`secforge init --domain` is the supported authorization helper.** It already writes as root (since init is meant to be run with sudo). Document this clearly in CLAUDE.md and the wizard prompt.
+
+**Impact on existing flows:**
+- Root scans: unchanged
+- Non-root scans of already-authorized targets: unchanged
+- Non-root scans of NEW targets: now fail with a clear "run sudo secforge init --domain" instruction instead of self-authorizing
+- The CI smoke test (Section 3.1) must pre-create `config/.authorized_targets` containing `this_server` before running preflight, otherwise preflight will fail closed.
+- The cleanroom test (Section 3.2) must do the same after fresh install.
+
+**Spec text drift cleanup:** Anywhere in `_lib.sh` or docs that says "ensure it's group-writable" must be updated to "owned by root, group-readable only".
 
 ---
 
@@ -149,6 +188,17 @@ New flag that:
 
 Modifier flag `--purge-all` skips the backup step entirely (full nuke). Used together: `install.sh --reinstall --purge-all`.
 
+**Self-delete safety check:** Before deleting `${SECFORGE_DEST}`, check whether the running script lives inside that path. If it does, abort with a clear error:
+```
+[secforge] ERROR: Cannot --reinstall while running install.sh from inside ${SECFORGE_DEST}.
+[secforge] You're running: ${BASH_SOURCE[0]}
+[secforge] To reinstall, run from a separate location:
+[secforge]   curl -sSL https://raw.githubusercontent.com/Nosko666/SecForge/v2.0.0/install.sh -o /tmp/secforge-install.sh
+[secforge]   sudo bash /tmp/secforge-install.sh --reinstall
+[secforge] Or clone fresh into /tmp first.
+```
+This prevents the script from `rm -rf`ing itself mid-execution. Use `realpath` or `readlink -f` to compare paths reliably.
+
 This is the same flag the cleanroom test uses. Users get the same tool we use for testing — no special install path for tests.
 
 ---
@@ -177,8 +227,9 @@ This is the same flag the cleanroom test uses. Users get the same tool we use fo
 **Job: `smoke`** — runs on `ubuntu-latest`, ~30 sec
 - Install minimal deps via apt: `jq`, `python3`, `bash`, `curl`
 - Set `SECFORGE_ROOT=$GITHUB_WORKSPACE`
+- **Auth bootstrap:** `mkdir -p config && echo 'this_server' > config/.authorized_targets && chmod 0640 config/.authorized_targets` (preflight will fail closed without this after Section 1.4 lands)
 - Run `scripts/install-tools.sh --list` — verify exit 0 and output contains "INSTALLED"/"AVAILABLE"/"BUILTIN" markers
-- Run `scripts/preflight.sh --target localhost --scan-mode quick --stack node-nginx --session-id ci-test --require-tools curl,jq` — verify exit 0
+- Run `SECFORGE_ASSUME_YES=1 scripts/preflight.sh --target this_server --scan-mode quick --stack node-nginx --session-id ci-test --require-tools curl,jq` — verify exit 0
 - Verify `reports/ci-test/preflight.json` exists and contains required fields: `stack_detection.detected_stack`, `tools_planned`, `tools_effective`, `est_seconds`, `est_tools_total`
 - Cleanup `reports/ci-test/`
 
@@ -190,8 +241,10 @@ This is the same flag the cleanroom test uses. Users get the same tool we use fo
 
 In-repo bash script. I run it before tagging a release. Not automated.
 
+**Critical design point:** The script must test the **real install.sh flow** — meaning install.sh fetches the code itself, not the script pre-cloning into `/opt/secforge`. Pre-cloning hides bugs in `install.sh --version`, tag resolution, and fresh-install behavior. The test downloads `install.sh` to a temp location and runs it; install.sh handles the clone.
+
 **Inputs:**
-- `--version <tag>` — version to test (default: latest local tag)
+- `--version <tag>` — version to test (default: latest local tag from `git tag -l 'v*' | sort -V | tail -1`)
 - `--host <ip>` — Hetzner host (default: `116.203.191.42`)
 - `--user <user>` — SSH user (default: `root`)
 
@@ -199,47 +252,57 @@ In-repo bash script. I run it before tagging a release. Not automated.
 
 1. **Pre-flight checks**
    - Verify SSH connectivity
-   - Check `git`, `bash`, `python3` available on remote
-   - Confirm `/opt/secforge` exists (bail if not — wrong host?)
+   - Check `git`, `bash`, `python3`, `curl` available on remote
+   - Print version under test
 
-2. **Backup**
-   - SSH to host
-   - `cp -r /opt/secforge/config/secforge.conf /tmp/cleanroom-backup-${ts}/secforge.conf`
-   - `cp -r /opt/secforge/state /tmp/cleanroom-backup-${ts}/state`
-   - `cp -r /opt/secforge/config/.authorized_targets /tmp/cleanroom-backup-${ts}/`
+2. **Backup existing install**
+   - On host: `mkdir -p /tmp/cleanroom-backup-${ts}`
+   - `cp /opt/secforge/config/secforge.conf /tmp/cleanroom-backup-${ts}/` (if exists)
+   - `cp -r /opt/secforge/state /tmp/cleanroom-backup-${ts}/` (if exists)
+   - `cp /opt/secforge/config/.authorized_targets /tmp/cleanroom-backup-${ts}/` (if exists)
 
 3. **Wipe**
    - `rm -rf /opt/secforge`
 
-4. **Fresh install**
-   - `git clone https://github.com/Nosko666/SecForge.git /opt/secforge`
-   - `cd /opt/secforge && git checkout ${VERSION}`
-   - `sudo bash install.sh` (or `bootstrap.sh` if install.sh expects piping)
+4. **Fresh install via real install.sh flow**
+   - Download `install.sh` to a temp location: `curl -sSL "https://raw.githubusercontent.com/Nosko666/SecForge/${VERSION}/install.sh" -o /tmp/cleanroom-install.sh`
+   - Set `SECFORGE_VERSION=${VERSION}` to pin the install
+   - Run: `sudo SECFORGE_VERSION=${VERSION} bash /tmp/cleanroom-install.sh`
+   - install.sh handles the clone, tag checkout, and bootstrap itself
+   - This exercises the real user flow end-to-end
 
 5. **Validate install**
-   - `secforge --version` returns expected version
+   - `secforge version` returns version containing the tag (NOTE: command is `version` not `--version`)
    - `secforge install --list` exits 0 and shows tools
-   - `secforge init --tier 1 --domain test.local` writes `TIER_MAX="1"` to config
+   - Verify `/opt/secforge/config/.authorized_targets` exists with mode 0640 (`stat -c '%a' ...` returns `640`)
+   - `sudo secforge init --tier 1 --domain test.local` writes `TIER_MAX="1"` to config
+   - Verify `test.local` was added to `.authorized_targets`
    - `bash -n scripts/*.sh bin/secforge install.sh` passes
    - Catalogs valid (re-run the CI catalog check)
 
 6. **Validate scan**
-   - `secforge scan localhost --stack node-nginx` exits 0
+   - `sudo secforge init --domain this_server` (authorize the local target as root)
+   - `secforge scan this_server --stack node-nginx` exits 0
    - `reports/<latest>/scan_manifest.json` has fields: `profile=node-nginx`, `scan_mode=quick`, `tier_max=1`, `tool_durations` non-empty
    - `reports/<latest>/findings.json` exists and has `scan_profile=node-nginx`
    - `reports/<latest>/preflight.json` has rich `stack_detection` with `detected_stack`, `score`, `signals`
    - `/tmp/secforge-dashboard-*.status` contains `scan_start` and `scan_done` events with per-tool events between
 
-7. **Restore**
-   - Restore backed-up config, state, .authorized_targets
-   - Remove backup directory
+7. **Validate non-root authorization rejection (Section 1.4 fix)**
+   - As non-root user (e.g., `testuser`), run: `secforge scan unauthorized.example.com --stack node-nginx`
+   - Verify it exits non-zero with the "run sudo secforge init --domain" instruction
+   - Verify `unauthorized.example.com` is NOT added to `.authorized_targets`
 
-8. **Report**
+8. **Restore**
+   - Restore backed-up config, state, .authorized_targets
+   - Remove backup directory and `/tmp/cleanroom-install.sh`
+
+9. **Report**
    - Print PASS/FAIL summary table
    - Exit 0 on success, non-zero on any failure
    - Save full log to `/tmp/cleanroom-${ts}.log` on remote
 
-The script uses `set -euo pipefail` and explicit error checks. Failures abort early and skip restore (so debugging is possible). Success path always restores.
+The script uses `set -euo pipefail` and explicit error checks. Failures abort early and skip restore (so debugging is possible — the broken state stays on disk). Success path always restores.
 
 ---
 
@@ -262,16 +325,24 @@ The script uses `set -euo pipefail` and explicit error checks. Failures abort ea
 
 1. `git tag -l` shows `v2.0.0`
 2. `CHANGELOG.md` exists with v2.0.0 themed entry
-3. `install.sh --reinstall` works (preserves config/state by default, `--purge-all` skips backup)
+3. `install.sh --reinstall` works (preserves config/state by default, `--purge-all` skips backup, refuses to self-delete when run from inside `${SECFORGE_DEST}`)
 4. `install.sh --version v2.0.0` checks out the tag explicitly
 5. `update-all.sh` no longer does bare `git pull` (requires explicit version)
-6. `sf_install_github_release_binary` verifies checksums and fails closed when missing
-7. `_lib.sh` creates `.authorized_targets` with mode 0640
-8. README shows clone-and-review as the recommended install (no `curl | sudo bash` in primary path)
-9. `.github/workflows/ci.yml` runs syntax + catalogs + smoke jobs in parallel, all pass
-10. `scripts/test/cleanroom-hetzner.sh` runs end-to-end on Hetzner and reports PASS
-11. Status badge in README links to the CI workflow
-12. CI passes on the v2.0.0 tag commit
+6. `bin/secforge update --version v2.0.0` forwards correctly to `update-all.sh`
+7. `sf_install_github_release_binary` verifies the downloaded asset (not extracted binary), fails closed when missing checksums or hash mismatch
+8. `bootstrap.sh` verifies gum download checksum
+9. `catalog/tools.json` has `verify` field for any tool that lacks upstream checksums (or all default to sha256)
+10. `_lib.sh` creates `.authorized_targets` with mode 0640
+11. Non-root scan of an unauthorized target prints the "sudo secforge init --domain" instruction and exits non-zero (does NOT self-authorize)
+12. Root scan or already-authorized target proceeds normally (no regression)
+13. README shows clone-and-review as the recommended install (no `curl | sudo bash` in primary path)
+14. `.github/workflows/ci.yml` runs syntax + catalogs + smoke jobs in parallel, all pass
+15. CI smoke job pre-creates `.authorized_targets` containing `this_server` so preflight works
+16. `scripts/test/cleanroom-hetzner.sh` runs end-to-end on Hetzner via the real install.sh flow and reports PASS
+17. Cleanroom test uses `secforge version` (not `--version`) to check installed version
+18. Status badge in README links to the CI workflow
+19. CI passes on the v2.0.0 tag commit
+20. If no tagged release exists AND `SECFORGE_VERSION` is unset, install.sh fails with clear message (no silent fallback to main)
 
 ---
 
@@ -281,12 +352,16 @@ The script uses `set -euo pipefail` and explicit error checks. Failures abort ea
 - `CHANGELOG.md`
 - `.github/workflows/ci.yml`
 - `scripts/test/cleanroom-hetzner.sh`
+- `docs/security/checksum-audit-2026-04-07.md` — per-tool checksum audit results
 
 ### Modified
 - `README.md` — replace curl-pipe install, add status badge, add "why no curl-pipe" callout
-- `install.sh` — add `--reinstall`, `--purge-all`, `--version`, `SECFORGE_VERSION` support
+- `install.sh` — add `--reinstall`, `--purge-all`, `--version`, `SECFORGE_VERSION` support, self-delete safety check
 - `scripts/update-all.sh` — replace `git pull` with version-pinned fetch+checkout
-- `scripts/_lib.sh` — modify `sf_install_github_release_binary` for SHA-256 verification, change `.authorized_targets` mode to 0640
+- `scripts/bootstrap.sh` — add SHA-256 verification for gum download (or refactor to use `sf_install_github_release_binary`)
+- `scripts/_lib.sh` — modify `sf_install_github_release_binary` for SHA-256 verification of downloaded asset (not extracted binary), change `.authorized_targets` mode to 0640, rewrite `sf_require_authorization` to fail-closed for non-root scans
+- `bin/secforge` — `update` subcommand accepts `--version` and forwards to `update-all.sh`
+- `catalog/tools.json` — add `verify` field to tools that lack upstream checksums (per audit)
 
 ### Tagged
 - `v2.0.0` annotated git tag at HEAD after all changes land
