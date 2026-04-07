@@ -256,7 +256,7 @@ main() {
   while [[ "${#}" -gt 0 ]]; do
     case "$1" in
       --version) export SECFORGE_VERSION="${2:-}"; shift 2 ;;
-      *) shift ;;
+      *) sf_die "Unknown flag: $1" ;;
     esac
   done
 
@@ -310,7 +310,7 @@ main() {
 
     sf_log "Updating SecForge to ${_target_ref}..."
     git -C "${SECFORGE_ROOT}" fetch --tags origin
-    git -C "${SECFORGE_ROOT}" checkout "${_target_ref}" || sf_die "Ref '${_target_ref}' not found"
+    git -C "${SECFORGE_ROOT}" checkout "${_target_ref}" || sf_die "Failed to checkout '${_target_ref}' in ${SECFORGE_ROOT} (ref may not exist, or working tree may be dirty)"
 
     after="$(git -C "${SECFORGE_ROOT}" rev-parse --short HEAD 2>/dev/null || true)"
     if [[ -n "${before}" || -n "${after}" ]]; then

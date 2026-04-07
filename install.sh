@@ -80,7 +80,7 @@ sf_clone_or_update_repo() {
     git clone "${repo_url}" "${dest}"
     git -C "${dest}" fetch --tags origin
     sf_log "Checking out ${ref}..."
-    git -C "${dest}" checkout "${ref}" || sf_die "Ref '${ref}' not found in ${repo_url}"
+    git -C "${dest}" checkout "${ref}" || sf_die "Failed to checkout '${ref}' in ${dest} (ref may not exist, or working tree may be dirty)"
     return 0
   fi
 
@@ -92,7 +92,7 @@ sf_clone_or_update_repo() {
   git -C "${dest}" remote set-url origin "${repo_url}" >/dev/null 2>&1 || true
   git -C "${dest}" fetch --tags origin
   sf_log "Checking out ${ref}..."
-  git -C "${dest}" checkout "${ref}" || sf_die "Ref '${ref}' not found"
+  git -C "${dest}" checkout "${ref}" || sf_die "Failed to checkout '${ref}' in ${dest} (ref may not exist, or working tree may be dirty)"
 }
 
 # Validate that a ref string is one of: v[0-9]*, "main", or 7+ char hex SHA
