@@ -5,7 +5,7 @@ For SecForge v2.0.0 release. Tracks which tools published via GitHub release hav
 ## Methodology
 
 For each tool with `install_method: "github_release"` in `catalog/tools.json`:
-1. Default behavior: `sf_install_github_release_binary` looks for `checksums.txt`, `<basename>_checksums.txt`, `<basename>.sha256`, `SHA256SUMS`, or any asset with "checksum"/"sha256" in the name.
+1. Default behavior: `sf_install_github_release_binary` looks for one of these five exact asset names in the GitHub release: `checksums.txt`, `<basename>_checksums.txt`, `<basename>.sha256`, `SHA256SUMS`, `checksums_sha256.txt`.
 2. If found, verify the downloaded asset against the listed hash. Fail closed on mismatch.
 3. If not found, install fails closed. Override per-tool by adding `verify: { mode: "none", reason, tracking_url }` to the catalog entry.
 

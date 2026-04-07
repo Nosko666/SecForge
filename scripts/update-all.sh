@@ -92,17 +92,43 @@ sf_git_pull_ff_only() {
   git -C "${repo_dir}" -c core.hooksPath=/dev/null pull --ff-only
 }
 
+# Get verify_mode for a tool from the catalog. Defaults to sha256 if not set.
+sf_get_tool_verify_mode() {
+  local tool_id="$1"
+  local tools_json="${SECFORGE_ROOT:-/opt/secforge}/catalog/tools.json"
+  if [[ ! -f "${tools_json}" ]]; then
+    printf '%s' "sha256"
+    return 0
+  fi
+  python3 - "${tools_json}" "${tool_id}" <<'PY' 2>/dev/null || printf '%s' "sha256"
+import json, sys
+try:
+    path = sys.argv[1]
+    tool_id = sys.argv[2]
+    with open(path) as fh:
+        t = json.load(fh)
+    mode = (t.get(tool_id, {}).get("verify") or {}).get("mode", "sha256")
+    print(mode)
+except Exception:
+    print("sha256")
+PY
+}
+
 sf_update_github_release_binary() {
-  # Usage: sf_update_github_release_binary <repo> <expected_binary> <install_path>
+  # Usage: sf_update_github_release_binary <repo> <expected_binary> <install_path> [tool_id]
   local repo="$1"
   local expected="$2"
   local install_path="$3"
+  local tool_id="${4:-${expected}}"
 
   local tmp
   tmp="$(sf_mktemp_dir)"
   local tmp_bin="${tmp}/${expected}.new"
 
-  if sf_install_github_release_binary "${repo}" "${expected}" "${tmp_bin}"; then
+  local _verify_mode
+  _verify_mode="$(sf_get_tool_verify_mode "${tool_id}")"
+
+  if sf_install_github_release_binary "${repo}" "${expected}" "${tmp_bin}" "${_verify_mode}"; then
     if [[ -x "${tmp_bin}" ]]; then
       install -m 0755 "${tmp_bin}" "${install_path}"
       rm -rf "${tmp}"
@@ -403,7 +429,7 @@ main() {
         bin_path="${SECFORGE_ROOT}/bin/kr"
       fi
       before="$(sf_tool_version "${tool}")"
-      sf_step "Updating ${tool} (GitHub release)" sf_update_github_release_binary "${repo}" "${expected}" "${bin_path}"
+      sf_step "Updating ${tool} (GitHub release)" sf_update_github_release_binary "${repo}" "${expected}" "${bin_path}" "${tool}"
       after="$(sf_tool_version "${tool}")"
       sf_log "${tool}: ${before:-unknown} -> ${after:-unknown}"
     fi

@@ -420,14 +420,6 @@ sf_github_find_checksum_url() {
     fi
   done
 
-  # Last resort: any asset whose name contains "checksum" or "sha256" (case insensitive)
-  local fallback
-  fallback="$(echo "${json}" | jq -r '.assets[] | select(.name | test("checksum|sha256"; "i")) | .browser_download_url' 2>/dev/null | head -n1)"
-  if [[ -n "${fallback}" && "${fallback}" != "null" ]]; then
-    printf '%s' "${fallback}"
-    return 0
-  fi
-
   return 1
 }
 
@@ -447,8 +439,12 @@ sf_verify_sha256() {
   asset_basename="$(basename -- "${asset_path}")"
   actual_hash="$(sha256sum "${asset_path}" | awk '{print $1}')"
 
-  # Standard checksum file format: "<hash>  <filename>" (one or two spaces, optional * for binary mode)
-  expected_hash="$(grep -E "[[:space:]]+\*?${asset_basename}\$" "${checksum_path}" 2>/dev/null | awk '{print $1}' | head -n1)"
+  # Standard checksum file format: "<hash>  <filename>" (one or two spaces, optional * for binary mode).
+  # Use awk fixed-string match (no regex injection from filename) and strip CR for CRLF safety.
+  expected_hash="$(awk -v name="${asset_basename}" '
+    { sub(/\r$/, "") }
+    $NF == name || $NF == "*" name { print $1; exit }
+  ' "${checksum_path}" 2>/dev/null)"
 
   if [[ -z "${expected_hash}" ]]; then
     sf_warn "No checksum entry for ${asset_basename} in checksum file"
@@ -492,7 +488,11 @@ sf_install_github_release_binary() {
   extract_dir="${tmp}/extract"
 
   sf_log "Downloading ${repo} release asset..."
-  sf_curl -o "${archive}" "${url}"
+  if ! sf_curl -o "${archive}" "${url}"; then
+    sf_warn "Failed to download ${url}"
+    rm -rf "${tmp}"
+    return 1
+  fi
 
   # ── Checksum verification ──
   if [[ "${SECFORGE_SKIP_CHECKSUMS:-0}" == "1" ]]; then
@@ -511,7 +511,11 @@ sf_install_github_release_binary() {
       return 1
     fi
     checksum_file="${tmp}/$(basename -- "${checksum_url}")"
-    sf_curl -o "${checksum_file}" "${checksum_url}"
+    if ! sf_curl -o "${checksum_file}" "${checksum_url}"; then
+      sf_warn "Failed to download checksum file from ${checksum_url}"
+      rm -rf "${tmp}"
+      return 1
+    fi
     if ! sf_verify_sha256 "${archive}" "${checksum_file}"; then
       sf_warn "Checksum verification failed for ${repo}. Aborting install."
       rm -rf "${tmp}"
