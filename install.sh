@@ -168,13 +168,86 @@ sf_resolve_version() {
   sf_die "No tagged releases found. Use --version main to install from latest commit (NOT RECOMMENDED for production)."
 }
 
+# Backup config and state to /tmp before reinstall
+sf_reinstall_backup() {
+  local dest="$1"
+  local ts
+  ts="$(date +%Y%m%d_%H%M%S)"
+  local backup_dir="/tmp/secforge-backup-${ts}"
+
+  mkdir -p "${backup_dir}/config" "${backup_dir}/state"
+
+  if [[ -f "${dest}/config/secforge.conf" ]]; then
+    cp -a "${dest}/config/secforge.conf" "${backup_dir}/config/" || true
+  fi
+  if [[ -f "${dest}/config/.authorized_targets" ]]; then
+    cp -a "${dest}/config/.authorized_targets" "${backup_dir}/config/" || true
+  fi
+  if [[ -d "${dest}/state" ]]; then
+    cp -a "${dest}/state/." "${backup_dir}/state/" || true
+  fi
+
+  printf '%s' "${backup_dir}"
+}
+
+# Restore config and state from backup, preserving ownership and modes
+sf_reinstall_restore() {
+  local backup_dir="$1"
+  local dest="$2"
+
+  if [[ ! -d "${backup_dir}" ]]; then
+    sf_warn "Backup dir ${backup_dir} missing — nothing to restore."
+    return 0
+  fi
+
+  if [[ -f "${backup_dir}/config/secforge.conf" ]]; then
+    cp -a "${backup_dir}/config/secforge.conf" "${dest}/config/" || true
+  fi
+  if [[ -f "${backup_dir}/config/.authorized_targets" ]]; then
+    cp -a "${backup_dir}/config/.authorized_targets" "${dest}/config/" || true
+    # Re-enforce 0640 in case the source file had different perms
+    chmod 0640 "${dest}/config/.authorized_targets" 2>/dev/null || true
+  fi
+  if [[ -d "${backup_dir}/state" ]] && [[ -n "$(ls -A "${backup_dir}/state" 2>/dev/null || true)" ]]; then
+    mkdir -p "${dest}/state"
+    cp -a "${backup_dir}/state/." "${dest}/state/" || true
+  fi
+
+  sf_log "Restored config and state from ${backup_dir}"
+}
+
+# Safety check: refuse to delete a directory we're running from
+sf_check_self_delete() {
+  local dest="$1"
+  local script_path
+  script_path="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+  local dest_real
+  dest_real="$(realpath "${dest}" 2>/dev/null || readlink -f "${dest}" 2>/dev/null || echo "${dest}")"
+
+  if [[ "${script_path}" == "${dest_real}/"* ]]; then
+    sf_warn "Cannot --reinstall while running install.sh from inside ${dest}"
+    sf_warn "You're running: ${script_path}"
+    sf_warn "To reinstall, run from a separate location:"
+    sf_warn "  curl -sSL https://raw.githubusercontent.com/Nosko666/SecForge/v2.0.0/install.sh -o /tmp/secforge-install.sh"
+    sf_warn "  sudo bash /tmp/secforge-install.sh --reinstall"
+    sf_die "Self-delete refused."
+  fi
+}
+
 main() {
   # Parse flags
+  local _do_reinstall=0 _do_purge_all=0
   while [[ "${#}" -gt 0 ]]; do
     case "$1" in
       --version)
         export SECFORGE_VERSION="${2:-}"
         shift 2 ;;
+      --reinstall)
+        _do_reinstall=1
+        shift ;;
+      --purge-all)
+        _do_purge_all=1
+        shift ;;
       --help|-h)
         cat <<EOF
 Usage: install.sh [options]
@@ -182,6 +255,8 @@ Usage: install.sh [options]
 Options:
   --version <ref>     Git ref to install (tag like v2.0.0, 'main', or commit SHA)
                       Default: latest tag for fresh installs, current ref for existing
+  --reinstall         Wipe and reinstall (preserves config + state by default)
+  --purge-all         Modifier for --reinstall: skip backup (full nuke)
   --help              Show this help
 
 Environment:
@@ -197,6 +272,27 @@ EOF
 
   sf_need_root
   sf_require_ubuntu
+
+  # Reinstall flow
+  if [[ "${_do_reinstall}" -eq 1 ]]; then
+    sf_check_self_delete "${SECFORGE_DEST}"
+    if [[ ! -d "${SECFORGE_DEST}" ]]; then
+      sf_warn "${SECFORGE_DEST} does not exist; --reinstall has nothing to wipe. Proceeding with fresh install."
+    else
+      local _backup_dir=""
+      if [[ "${_do_purge_all}" -eq 1 ]]; then
+        sf_log "--purge-all: skipping backup"
+      else
+        sf_log "Backing up config and state..."
+        _backup_dir="$(sf_reinstall_backup "${SECFORGE_DEST}")"
+        sf_log "Backup written to ${_backup_dir}"
+      fi
+      sf_log "Wiping ${SECFORGE_DEST}..."
+      rm -rf "${SECFORGE_DEST}"
+      # Save backup dir for restore after install
+      export _SF_REINSTALL_BACKUP="${_backup_dir}"
+    fi
+  fi
 
   sf_log "SecForge installer"
   sf_log "This will clone SecForge to ${SECFORGE_DEST} and run the bootstrap."
@@ -215,6 +311,11 @@ EOF
   sf_log "Running bootstrap..."
   export SECFORGE_ROOT="${SECFORGE_DEST}"
   bash "${SECFORGE_DEST}/scripts/bootstrap.sh"
+
+  # Restore reinstall backup
+  if [[ -n "${_SF_REINSTALL_BACKUP:-}" ]]; then
+    sf_reinstall_restore "${_SF_REINSTALL_BACKUP}" "${SECFORGE_DEST}"
+  fi
 
   sf_log ""
   sf_log "Bootstrap complete. To install security tools:"
