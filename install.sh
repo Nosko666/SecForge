@@ -175,16 +175,21 @@ sf_reinstall_backup() {
   ts="$(date +%Y%m%d_%H%M%S)"
   local backup_dir="/tmp/secforge-backup-${ts}"
 
-  mkdir -p "${backup_dir}/config" "${backup_dir}/state"
+  if ! mkdir -p "${backup_dir}/config" "${backup_dir}/state"; then
+    sf_die "Failed to create backup dir ${backup_dir}. Is /tmp writable and has space? Use --purge-all to skip backup."
+  fi
 
   if [[ -f "${dest}/config/secforge.conf" ]]; then
-    cp -a "${dest}/config/secforge.conf" "${backup_dir}/config/" || true
+    cp -a "${dest}/config/secforge.conf" "${backup_dir}/config/" \
+      || sf_die "Failed to back up secforge.conf. Aborting before wipe."
   fi
   if [[ -f "${dest}/config/.authorized_targets" ]]; then
-    cp -a "${dest}/config/.authorized_targets" "${backup_dir}/config/" || true
+    cp -a "${dest}/config/.authorized_targets" "${backup_dir}/config/" \
+      || sf_die "Failed to back up .authorized_targets. Aborting before wipe."
   fi
   if [[ -d "${dest}/state" ]]; then
-    cp -a "${dest}/state/." "${backup_dir}/state/" || true
+    cp -a "${dest}/state/." "${backup_dir}/state/" \
+      || sf_die "Failed to back up state/. Aborting before wipe."
   fi
 
   printf '%s' "${backup_dir}"
@@ -219,12 +224,21 @@ sf_reinstall_restore() {
 # Safety check: refuse to delete a directory we're running from
 sf_check_self_delete() {
   local dest="$1"
-  local script_path
-  script_path="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
-  local dest_real
-  dest_real="$(realpath "${dest}" 2>/dev/null || readlink -f "${dest}" 2>/dev/null || echo "${dest}")"
+  local script_path dest_real
 
-  if [[ "${script_path}" == "${dest_real}/"* ]]; then
+  if command -v realpath >/dev/null 2>&1; then
+    script_path="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null)" || script_path=""
+    dest_real="$(realpath "${dest}" 2>/dev/null)" || dest_real=""
+  elif command -v readlink >/dev/null 2>&1; then
+    script_path="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null)" || script_path=""
+    dest_real="$(readlink -f "${dest}" 2>/dev/null)" || dest_real=""
+  fi
+
+  if [[ -z "${script_path}" || -z "${dest_real}" ]]; then
+    sf_die "Cannot resolve paths for self-delete safety check. Install coreutils (realpath) and retry, or manually verify install.sh is not inside ${dest}."
+  fi
+
+  if [[ "${script_path}" == "${dest_real}/"* ]] || [[ "${script_path}" == "${dest_real}" ]]; then
     sf_warn "Cannot --reinstall while running install.sh from inside ${dest}"
     sf_warn "You're running: ${script_path}"
     sf_warn "To reinstall, run from a separate location:"
@@ -279,6 +293,15 @@ EOF
     if [[ ! -d "${SECFORGE_DEST}" ]]; then
       sf_warn "${SECFORGE_DEST} does not exist; --reinstall has nothing to wipe. Proceeding with fresh install."
     else
+      # Confirm BEFORE destructive action
+      if [[ "${_do_purge_all}" -eq 1 ]]; then
+        sf_warn "--reinstall --purge-all will DELETE ${SECFORGE_DEST} (no backup)."
+      else
+        sf_warn "--reinstall will back up config + state to /tmp, then DELETE ${SECFORGE_DEST}."
+      fi
+      sf_confirm_tty "Type YES to proceed with reinstall:" "YES"
+
+      # Backup (unless --purge-all)
       local _backup_dir=""
       if [[ "${_do_purge_all}" -eq 1 ]]; then
         sf_log "--purge-all: skipping backup"
@@ -287,16 +310,37 @@ EOF
         _backup_dir="$(sf_reinstall_backup "${SECFORGE_DEST}")"
         sf_log "Backup written to ${_backup_dir}"
       fi
+
       sf_log "Wiping ${SECFORGE_DEST}..."
       rm -rf "${SECFORGE_DEST}"
-      # Save backup dir for restore after install
-      export _SF_REINSTALL_BACKUP="${_backup_dir}"
+      _SF_REINSTALL_BACKUP="${_backup_dir}"
     fi
+  fi
+
+  # Recovery trap: if anything fails after the wipe, tell the user where their backup is
+  if [[ "${_do_reinstall}" -eq 1 ]] && [[ -n "${_SF_REINSTALL_BACKUP:-}" ]]; then
+    _sf_recovery_backup="${_SF_REINSTALL_BACKUP}"
+    _sf_recovery_dest="${SECFORGE_DEST}"
+    sf_reinstall_recovery_trap() {
+      local rc=$?
+      if [[ ${rc} -ne 0 ]]; then
+        sf_warn "Install failed (exit ${rc}). Your backup is preserved at:"
+        sf_warn "  ${_sf_recovery_backup}"
+        sf_warn "To recover manually:"
+        sf_warn "  sudo mkdir -p ${_sf_recovery_dest}/config ${_sf_recovery_dest}/state"
+        sf_warn "  sudo cp -a ${_sf_recovery_backup}/config/. ${_sf_recovery_dest}/config/"
+        sf_warn "  sudo cp -a ${_sf_recovery_backup}/state/. ${_sf_recovery_dest}/state/"
+      fi
+      exit ${rc}
+    }
+    trap sf_reinstall_recovery_trap EXIT
   fi
 
   sf_log "SecForge installer"
   sf_log "This will clone SecForge to ${SECFORGE_DEST} and run the bootstrap."
-  sf_confirm_tty "Type YES to continue:" "YES"
+  if [[ "${_do_reinstall}" -ne 1 ]]; then
+    sf_confirm_tty "Type YES to continue:" "YES"
+  fi
 
   sf_ensure_git
   local _ref
@@ -316,6 +360,9 @@ EOF
   if [[ -n "${_SF_REINSTALL_BACKUP:-}" ]]; then
     sf_reinstall_restore "${_SF_REINSTALL_BACKUP}" "${SECFORGE_DEST}"
   fi
+
+  # Clear the recovery trap on success
+  trap - EXIT
 
   sf_log ""
   sf_log "Bootstrap complete. To install security tools:"
