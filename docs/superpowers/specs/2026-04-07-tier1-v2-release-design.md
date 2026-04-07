@@ -63,7 +63,7 @@ The README gets a brief "Why no curl-pipe?" callout explaining the security rati
 | Entry point | Default behavior |
 |---|---|
 | `install.sh` (fresh clone) | Latest tag from `git tag -l 'v*' \| sort -V \| tail -1`. If no tags exist, fail with: "No tagged releases found. Use `--version main` to install from latest commit." |
-| `install.sh` (existing checkout, e.g., after `git clone && git checkout v2.0.0 && sudo ./install.sh`) | **Preserve the currently checked-out ref.** Detect via `git symbolic-ref -q HEAD` (branch) or `git describe --tags --exact-match` (tag) or `git rev-parse HEAD` (commit). Do NOT silently jump to a newer tag. Print the resolved ref before proceeding. |
+| `install.sh` (existing checkout, e.g., after `git clone && git checkout v2.0.0 && sudo ./install.sh`) | **Preserve the currently checked-out ref**, but only if it's a valid release ref (tag matching `v[0-9]*`, the literal `main` branch, or a detached HEAD on a commit SHA). Detect via `git describe --tags --exact-match` (tag) → `git symbolic-ref -q HEAD` (branch) → `git rev-parse HEAD` (commit). **If the existing checkout is on a non-tag branch other than `main`** (e.g., a feature branch like `dev` or `wip-foo`), fail closed with: "Refusing to install from branch '<name>'. Run with explicit `--version v2.0.0` or `--version main` to proceed." Do NOT silently jump to a newer tag. Print the resolved ref before proceeding. |
 | `update-all.sh` | Latest tag from `git tag -l 'v*' \| sort -V \| tail -1`. Update == "move forward to latest stable release". Different from install: an update is intentionally a rollover. |
 | `bin/secforge update` | Forwards to `update-all.sh` with the same defaults. Accepts `--version <ref>` to pin. |
 
@@ -166,6 +166,14 @@ Default mode is `"sha256"` (implicit if field missing). Valid modes: `"sha256"` 
 ### 2.1 v2.0.0 git tag
 
 Annotated tag at the tip of `main` after all 8 items land. Tag message references the `## [2.0.0]` entry in `CHANGELOG.md`. Created via `git tag -a v2.0.0 -m "..."`, not lightweight.
+
+**Version source bump:** `scripts/secforge/__init__.py` currently has `__version__ = "2.0.0-dev"`. Bump to `__version__ = "2.0.0"` in the same commit that creates the tag (so the tagged commit reports the right version). `bin/secforge version` reads this string via `from secforge import __version__`.
+
+For future releases, the workflow is:
+1. After tagging vX.Y.Z, immediately bump `__version__` to `"X.Y.(Z+1)-dev"` on main (so unreleased commits clearly mark themselves as dev builds).
+2. Before tagging the next release, bump `-dev` suffix off.
+
+This is a manual step, not automated. Document it in the CHANGELOG release process notes.
 
 ### 2.2 CHANGELOG.md (themed summary)
 
@@ -374,7 +382,7 @@ The script uses `set -euo pipefail` and explicit error checks. Failures abort ea
 18. CI syntax job runs `bash -n bin/secforge` explicitly (not just `*.sh` glob)
 19. CI smoke job pre-creates `.authorized_targets` containing `this_server` so preflight works
 20. `scripts/test/cleanroom-hetzner.sh` runs end-to-end on Hetzner via the real install.sh flow (downloads install.sh to temp, lets install.sh handle clone) and reports PASS
-21. Cleanroom test uses `secforge version` (not `--version`) to check installed version
+21. Cleanroom test uses `secforge version` (not `--version`) to check installed version, and the output matches the tagged release (e.g., `SecForge v2.0.0` — must NOT contain `-dev` suffix at tag time)
 22. Cleanroom test exercises the non-root authorization rejection path
 23. Status badge in README links to the CI workflow
 24. CI passes on the v2.0.0 tag commit
@@ -399,6 +407,7 @@ The script uses `set -euo pipefail` and explicit error checks. Failures abort ea
 - `scripts/preflight.sh` — rewrite `sf_require_authorization` to fail-closed for non-root scans (this function lives here, NOT in _lib.sh)
 - `scripts/install-tools.sh` — read `verify` field from `catalog/tools.json` and pass it to `sf_install_github_release_binary` for `github_release` install method
 - `bin/secforge` — `update` subcommand accepts `--version` and forwards to `update-all.sh`; `init --domain` rejects non-root with clear error (do not silently skip auth file write)
+- `scripts/secforge/__init__.py` — bump `__version__` from `"2.0.0-dev"` to `"2.0.0"` in the tag commit
 - `catalog/tools.json` — add `verify` field to tools that lack upstream checksums (per audit)
 
 ### Tagged
