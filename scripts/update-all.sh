@@ -14,6 +14,24 @@ SECFORGE_VENV="${SECFORGE_VENV:-${SECFORGE_ROOT}/venv}"
 export PATH="${SECFORGE_ROOT}/bin:${PATH}"
 export GIT_TERMINAL_PROMPT=0
 
+# Validate that a ref string is one of: v[0-9]*, "main", or 7+ char hex SHA
+sf_validate_ref() {
+  local ref="$1"
+  if [[ -z "${ref}" ]]; then
+    return 1
+  fi
+  if [[ "${ref}" == "main" ]]; then
+    return 0
+  fi
+  if [[ "${ref}" =~ ^v[0-9][0-9a-zA-Z._+-]*$ ]]; then
+    return 0
+  fi
+  if [[ "${ref}" =~ ^[0-9a-f]{7,40}$ ]]; then
+    return 0
+  fi
+  return 1
+}
+
 sf_step() {
   local name="$1"
   shift
@@ -276,6 +294,11 @@ main() {
 
     # Resolve target version: --version flag, env var, or latest tag
     _target_ref="${SECFORGE_VERSION:-}"
+    if [[ -n "${_target_ref}" ]]; then
+      if ! sf_validate_ref "${_target_ref}"; then
+        sf_die "Invalid --version '${_target_ref}'. Use a tag (v2.0.0), 'main', or a 7+ char commit SHA."
+      fi
+    fi
     if [[ -z "${_target_ref}" ]]; then
       # Default for update: latest tag from remote
       _target_ref="$(git -C "${SECFORGE_ROOT}" ls-remote --tags --refs origin 'v[0-9]*' 2>/dev/null \

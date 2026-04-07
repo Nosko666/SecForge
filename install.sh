@@ -95,6 +95,24 @@ sf_clone_or_update_repo() {
   git -C "${dest}" checkout "${ref}" || sf_die "Ref '${ref}' not found"
 }
 
+# Validate that a ref string is one of: v[0-9]*, "main", or 7+ char hex SHA
+sf_validate_ref() {
+  local ref="$1"
+  if [[ -z "${ref}" ]]; then
+    return 1
+  fi
+  if [[ "${ref}" == "main" ]]; then
+    return 0
+  fi
+  if [[ "${ref}" =~ ^v[0-9][0-9a-zA-Z._+-]*$ ]]; then
+    return 0
+  fi
+  if [[ "${ref}" =~ ^[0-9a-f]{7,40}$ ]]; then
+    return 0
+  fi
+  return 1
+}
+
 # Resolve which git ref to use, based on env var, CLI flag, and existing checkout state.
 # Args: $1 = dest dir
 # Reads: SECFORGE_VERSION env var (or empty)
@@ -106,6 +124,9 @@ sf_resolve_version() {
 
   # Explicit request wins
   if [[ -n "${requested}" ]]; then
+    if ! sf_validate_ref "${requested}"; then
+      sf_die "Invalid --version '${requested}'. Use a tag (v2.0.0), 'main', or a 7+ char commit SHA."
+    fi
     printf '%s' "${requested}"
     return 0
   fi
