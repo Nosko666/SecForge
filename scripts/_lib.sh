@@ -395,10 +395,81 @@ else:
 PY
 }
 
+# Find the SHA-256 checksum file URL in a GitHub release.
+# Args: $1 = repo (owner/name), $2 = asset basename (e.g. "nuclei_3.0.0_linux_amd64.zip")
+# Returns: URL on stdout, or empty string if not found.
+sf_github_find_checksum_url() {
+  local repo="$1"
+  local asset_basename="$2"
+
+  if ! sf_has_cmd jq; then
+    return 1
+  fi
+
+  local json
+  json="$(sf_github_latest_release_json "${repo}")" || return 1
+
+  # Try (in order): checksums.txt, <basename>_checksums.txt, <basename>.sha256, SHA256SUMS, checksums_sha256.txt
+  local candidate
+  for candidate in "checksums.txt" "${asset_basename}_checksums.txt" "${asset_basename}.sha256" "SHA256SUMS" "checksums_sha256.txt"; do
+    local url
+    url="$(echo "${json}" | jq -r --arg name "${candidate}" '.assets[] | select(.name == $name) | .browser_download_url' 2>/dev/null | head -n1)"
+    if [[ -n "${url}" && "${url}" != "null" ]]; then
+      printf '%s' "${url}"
+      return 0
+    fi
+  done
+
+  # Last resort: any asset whose name contains "checksum" or "sha256" (case insensitive)
+  local fallback
+  fallback="$(echo "${json}" | jq -r '.assets[] | select(.name | test("checksum|sha256"; "i")) | .browser_download_url' 2>/dev/null | head -n1)"
+  if [[ -n "${fallback}" && "${fallback}" != "null" ]]; then
+    printf '%s' "${fallback}"
+    return 0
+  fi
+
+  return 1
+}
+
+# Verify a downloaded asset against its checksum file.
+# Args: $1 = path to asset, $2 = path to checksum file
+# Looks for a line in the checksum file matching the asset's basename.
+# Returns: 0 on match, 1 on no-match or missing entry.
+sf_verify_sha256() {
+  local asset_path="$1"
+  local checksum_path="$2"
+
+  if [[ ! -f "${asset_path}" ]] || [[ ! -f "${checksum_path}" ]]; then
+    return 1
+  fi
+
+  local asset_basename actual_hash expected_hash
+  asset_basename="$(basename -- "${asset_path}")"
+  actual_hash="$(sha256sum "${asset_path}" | awk '{print $1}')"
+
+  # Standard checksum file format: "<hash>  <filename>" (one or two spaces, optional * for binary mode)
+  expected_hash="$(grep -E "[[:space:]]+\*?${asset_basename}\$" "${checksum_path}" 2>/dev/null | awk '{print $1}' | head -n1)"
+
+  if [[ -z "${expected_hash}" ]]; then
+    sf_warn "No checksum entry for ${asset_basename} in checksum file"
+    return 1
+  fi
+
+  if [[ "${actual_hash}" != "${expected_hash}" ]]; then
+    sf_warn "Checksum mismatch for ${asset_basename}"
+    sf_warn "  expected: ${expected_hash}"
+    sf_warn "  actual:   ${actual_hash}"
+    return 1
+  fi
+
+  return 0
+}
+
 sf_install_github_release_binary() {
   local repo="$1"
   local expected_binary="$2"
   local install_path="$3"
+  local verify_mode="${4:-sha256}"  # sha256 (default) or none
 
   if [[ -x "${install_path}" ]]; then
     return 0
@@ -422,6 +493,36 @@ sf_install_github_release_binary() {
 
   sf_log "Downloading ${repo} release asset..."
   sf_curl -o "${archive}" "${url}"
+
+  # ── Checksum verification ──
+  if [[ "${SECFORGE_SKIP_CHECKSUMS:-0}" == "1" ]]; then
+    sf_warn "SECFORGE_SKIP_CHECKSUMS=1 — skipping checksum for ${repo} (user opt-out)"
+  elif [[ "${verify_mode}" == "none" ]]; then
+    sf_warn "verify.mode=none for ${repo} — skipping checksum (catalog opt-out)"
+  elif [[ "${verify_mode}" == "sha256" ]]; then
+    local asset_basename checksum_url checksum_file
+    asset_basename="$(basename -- "${url}")"
+    checksum_url="$(sf_github_find_checksum_url "${repo}" "${asset_basename}" || echo '')"
+    if [[ -z "${checksum_url}" ]]; then
+      sf_warn "No checksum file found in ${repo} release. Aborting install."
+      sf_warn "To override (NOT RECOMMENDED), set SECFORGE_SKIP_CHECKSUMS=1"
+      sf_warn "Or add 'verify': { 'mode': 'none', ... } to ${repo} in catalog/tools.json"
+      rm -rf "${tmp}"
+      return 1
+    fi
+    checksum_file="${tmp}/$(basename -- "${checksum_url}")"
+    sf_curl -o "${checksum_file}" "${checksum_url}"
+    if ! sf_verify_sha256 "${archive}" "${checksum_file}"; then
+      sf_warn "Checksum verification failed for ${repo}. Aborting install."
+      rm -rf "${tmp}"
+      return 1
+    fi
+    sf_log "Checksum verified for ${repo}"
+  else
+    sf_warn "Unknown verify_mode '${verify_mode}' for ${repo}. Aborting install."
+    rm -rf "${tmp}"
+    return 1
+  fi
 
   mkdir -p "$(dirname -- "${install_path}")"
 

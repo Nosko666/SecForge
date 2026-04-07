@@ -363,6 +363,7 @@ print(f"TOOL_APT_PACKAGES='{safe_val(' '.join(apt_pkgs))}'")
 # github_release
 print(f"TOOL_REPO='{safe_val(tdata.get('repo', ''))}'")
 print(f"TOOL_EXPECTED_BINARY='{safe_val(tdata.get('expected_binary', ''))}'")
+print(f"TOOL_VERIFY_MODE='{safe_val((tdata.get('verify') or {}).get('mode', 'sha256'))}'")
 
 # git_clone
 print(f"TOOL_DEST_PATH='{safe_val(tdata.get('dest_path', ''))}'")
@@ -663,6 +664,7 @@ install_single_tool() {
   local TOOL_CUSTOM_FUNCTION="" TOOL_INSTRUCTIONS=""
   local TOOL_CHECK_COMMAND="" TOOL_CHECK_PATH=""
   local TOOL_DEPENDS_ON="" TOOL_REQUIRES_COMMANDS=""
+  local TOOL_VERIFY_MODE=""
   eval "${meta}"
 
   sf_log "Installing ${tool_id} (${TOOL_TITLE}) via ${TOOL_METHOD}..."
@@ -706,7 +708,7 @@ install_single_tool() {
         return 1
       fi
       local install_path="${SECFORGE_ROOT}/bin/${TOOL_EXPECTED_BINARY}"
-      sf_install_github_release_binary "${TOOL_REPO}" "${TOOL_EXPECTED_BINARY}" "${install_path}"
+      sf_install_github_release_binary "${TOOL_REPO}" "${TOOL_EXPECTED_BINARY}" "${install_path}" "${TOOL_VERIFY_MODE:-sha256}"
       ;;
 
     git_clone)
