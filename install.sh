@@ -4,7 +4,6 @@ set -euo pipefail
 umask 022
 
 SECFORGE_DEST="${SECFORGE_DEST:-/opt/secforge}"
-SECFORGE_BRANCH="${SECFORGE_BRANCH:-main}"
 SECFORGE_REPO_URL_DEFAULT="https://github.com/Nosko666/SecForge.git"
 SECFORGE_REPO_URL="${SECFORGE_REPO_URL:-$SECFORGE_REPO_URL_DEFAULT}"
 
@@ -69,7 +68,7 @@ sf_ensure_git() {
 
 sf_clone_or_update_repo() {
   local dest="$1"
-  local branch="$2"
+  local ref="$2"
   local repo_url="$3"
 
   if [[ -e "${dest}" && ! -d "${dest}" ]]; then
@@ -78,7 +77,10 @@ sf_clone_or_update_repo() {
 
   if [[ ! -d "${dest}" ]]; then
     sf_log "Cloning SecForge into ${dest}..."
-    git clone --depth 1 --branch "${branch}" "${repo_url}" "${dest}"
+    git clone "${repo_url}" "${dest}"
+    git -C "${dest}" fetch --tags origin
+    sf_log "Checking out ${ref}..."
+    git -C "${dest}" checkout "${ref}" || sf_die "Ref '${ref}' not found in ${repo_url}"
     return 0
   fi
 
@@ -87,21 +89,91 @@ sf_clone_or_update_repo() {
   fi
 
   sf_log "Updating existing SecForge checkout in ${dest}..."
-  if ! git -C "${dest}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    sf_die "${dest} is not a valid git working tree."
-  fi
-
-  # Best-effort: keep origin pointed at the requested repo (supports forks via SECFORGE_REPO_URL).
   git -C "${dest}" remote set-url origin "${repo_url}" >/dev/null 2>&1 || true
+  git -C "${dest}" fetch --tags origin
+  sf_log "Checking out ${ref}..."
+  git -C "${dest}" checkout "${ref}" || sf_die "Ref '${ref}' not found"
+}
 
-  git -C "${dest}" fetch --depth 1 origin "${branch}"
-  git -C "${dest}" checkout -q "${branch}"
-  if ! git -C "${dest}" pull --ff-only origin "${branch}"; then
-    sf_die "Could not fast-forward update ${dest}. Resolve local changes, then re-run."
+# Resolve which git ref to use, based on env var, CLI flag, and existing checkout state.
+# Args: $1 = dest dir
+# Reads: SECFORGE_VERSION env var (or empty)
+# Outputs: ref name on stdout
+# Fails if no valid ref can be determined.
+sf_resolve_version() {
+  local dest="$1"
+  local requested="${SECFORGE_VERSION:-}"
+
+  # Explicit request wins
+  if [[ -n "${requested}" ]]; then
+    printf '%s' "${requested}"
+    return 0
   fi
+
+  # Existing checkout: preserve current ref if it's valid
+  if [[ -d "${dest}/.git" ]]; then
+    local current_tag current_branch
+    current_tag="$(git -C "${dest}" describe --tags --exact-match 2>/dev/null || true)"
+    if [[ -n "${current_tag}" && "${current_tag}" == v[0-9]* ]]; then
+      printf '%s' "${current_tag}"
+      return 0
+    fi
+    current_branch="$(git -C "${dest}" symbolic-ref -q --short HEAD 2>/dev/null || true)"
+    if [[ "${current_branch}" == "main" ]]; then
+      printf '%s' "main"
+      return 0
+    fi
+    if [[ -n "${current_branch}" ]]; then
+      sf_die "Refusing to install from branch '${current_branch}'. Run with explicit --version v2.0.0 or --version main to proceed."
+    fi
+    # Detached HEAD on a non-tag commit
+    local current_sha
+    current_sha="$(git -C "${dest}" rev-parse HEAD 2>/dev/null || true)"
+    if [[ -n "${current_sha}" ]]; then
+      printf '%s' "${current_sha}"
+      return 0
+    fi
+  fi
+
+  # Fresh install: use latest tag from the remote
+  local latest_tag
+  latest_tag="$(git ls-remote --tags --refs "${SECFORGE_REPO_URL}" 'v[0-9]*' 2>/dev/null \
+    | awk -F'/' '{print $NF}' | sort -V | tail -n1 || true)"
+  if [[ -n "${latest_tag}" ]]; then
+    printf '%s' "${latest_tag}"
+    return 0
+  fi
+
+  sf_die "No tagged releases found. Use --version main to install from latest commit (NOT RECOMMENDED for production)."
 }
 
 main() {
+  # Parse flags
+  while [[ "${#}" -gt 0 ]]; do
+    case "$1" in
+      --version)
+        export SECFORGE_VERSION="${2:-}"
+        shift 2 ;;
+      --help|-h)
+        cat <<EOF
+Usage: install.sh [options]
+
+Options:
+  --version <ref>     Git ref to install (tag like v2.0.0, 'main', or commit SHA)
+                      Default: latest tag for fresh installs, current ref for existing
+  --help              Show this help
+
+Environment:
+  SECFORGE_VERSION    Same as --version
+  SECFORGE_DEST       Install destination (default: /opt/secforge)
+  SECFORGE_REPO_URL   Git repo URL (default: github.com/Nosko666/SecForge.git)
+EOF
+        exit 0 ;;
+      *)
+        sf_die "Unknown flag: $1 (use --help)" ;;
+    esac
+  done
+
   sf_need_root
   sf_require_ubuntu
 
@@ -110,7 +182,10 @@ main() {
   sf_confirm_tty "Type YES to continue:" "YES"
 
   sf_ensure_git
-  sf_clone_or_update_repo "${SECFORGE_DEST}" "${SECFORGE_BRANCH}" "${SECFORGE_REPO_URL}"
+  local _ref
+  _ref="$(sf_resolve_version "${SECFORGE_DEST}")"
+  sf_log "Installing SecForge ref: ${_ref}"
+  sf_clone_or_update_repo "${SECFORGE_DEST}" "${_ref}" "${SECFORGE_REPO_URL}"
 
   if [[ ! -r "${SECFORGE_DEST}/scripts/bootstrap.sh" ]]; then
     sf_die "Missing ${SECFORGE_DEST}/scripts/bootstrap.sh after clone. Repo may be incomplete."

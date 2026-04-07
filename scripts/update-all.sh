@@ -234,6 +234,14 @@ update_netexec_editable() {
 }
 
 main() {
+  # Parse flags (only --version is handled here; other args are ignored for back-compat).
+  while [[ "${#}" -gt 0 ]]; do
+    case "$1" in
+      --version) export SECFORGE_VERSION="${2:-}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
   sf_need_root
   sf_require_ubuntu
 
@@ -261,14 +269,29 @@ main() {
   sf_log "Installed categories: ${installed_categories:-<unknown>}"
   sf_log "Installed tools: ${installed_tools:-<unknown>}"
 
-  # 1) Update SecForge repo itself (best-effort).
+  # 1) Update SecForge repo itself (version-pinned: fetch + checkout).
   if [[ -d "${SECFORGE_ROOT}/.git" ]] && command -v git >/dev/null 2>&1; then
-    local before after
+    local before after _target_ref
     before="$(git -C "${SECFORGE_ROOT}" rev-parse --short HEAD 2>/dev/null || true)"
-    sf_step "Updating SecForge repo (git pull --ff-only)" sf_git_pull_ff_only "${SECFORGE_ROOT}"
+
+    # Resolve target version: --version flag, env var, or latest tag
+    _target_ref="${SECFORGE_VERSION:-}"
+    if [[ -z "${_target_ref}" ]]; then
+      # Default for update: latest tag from remote
+      _target_ref="$(git -C "${SECFORGE_ROOT}" ls-remote --tags --refs origin 'v[0-9]*' 2>/dev/null \
+        | awk -F'/' '{print $NF}' | sort -V | tail -n1 || true)"
+      if [[ -z "${_target_ref}" ]]; then
+        sf_die "No tagged releases found. Set SECFORGE_VERSION=main to update to latest commit."
+      fi
+    fi
+
+    sf_log "Updating SecForge to ${_target_ref}..."
+    git -C "${SECFORGE_ROOT}" fetch --tags origin
+    git -C "${SECFORGE_ROOT}" checkout "${_target_ref}" || sf_die "Ref '${_target_ref}' not found"
+
     after="$(git -C "${SECFORGE_ROOT}" rev-parse --short HEAD 2>/dev/null || true)"
     if [[ -n "${before}" || -n "${after}" ]]; then
-      sf_log "SecForge repo: ${before:-unknown} -> ${after:-unknown}"
+      sf_log "SecForge repo: ${before:-unknown} -> ${after:-unknown} (ref: ${_target_ref})"
     fi
   fi
 
