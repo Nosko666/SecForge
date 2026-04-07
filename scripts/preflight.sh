@@ -81,7 +81,7 @@ sf_require_authorization() {
 
   if [[ ! -e "${auth_file}" ]]; then
     sf_warn "Authorization cache missing: ${auth_file}"
-    sf_warn "Run the installer again or create it (root) and ensure it's group-writable."
+    sf_warn "Run 'sudo secforge init --domain ${target_key}' to authorize, or re-run the installer to create the file."
     return 1
   fi
 
@@ -89,13 +89,25 @@ sf_require_authorization() {
     return 0
   fi
 
-  sf_warn "First time scanning: ${target_key}"
-  sf_warn "To continue, you must confirm you own/are authorized to test this target."
-  if ! sf_ask_tty_yes "Type YES to confirm authorization:" "YES"; then
-    sf_die "Authorization not confirmed. Aborting."
+  # Target not authorized. Behavior depends on whether we can write the file.
+  if [[ "${EUID}" -eq 0 ]]; then
+    # Root can append directly
+    sf_warn "First time scanning: ${target_key}"
+    sf_warn "To continue, you must confirm you own/are authorized to test this target."
+    if ! sf_ask_tty_yes "Type YES to confirm authorization:" "YES"; then
+      sf_die "Authorization not confirmed. Aborting."
+    fi
+    printf '%s\n' "${target_key}" >>"${auth_file}"
+    return 0
   fi
 
-  printf '%s\n' "${target_key}" >>"${auth_file}"
+  # Non-root: fail closed with clear instruction
+  sf_warn "Target '${target_key}' is not authorized."
+  sf_warn "To authorize, run as root:"
+  sf_warn "  sudo secforge init --domain ${target_key}"
+  sf_warn "Or for one-off (root only):"
+  sf_warn "  echo '${target_key}' | sudo tee -a ${auth_file}"
+  sf_die "Non-root scans cannot self-authorize new targets."
 }
 
 sf_dns_resolves() {

@@ -662,6 +662,10 @@ state.close()
 
     # If flags provided — merge-only mode (AI/scripted)
     _sf_had_flags=0
+    # Adding domains requires root (we need to write .authorized_targets which is now 0640)
+    if [[ "${#_sf_domains[@]}" -gt 0 ]] && [[ "${EUID}" -ne 0 ]]; then
+      sf_die "init --domain requires root. Re-run with: sudo secforge init --domain ${_sf_domains[0]}"
+    fi
     if [[ "${#_sf_domains[@]}" -gt 0 ]]; then
       _sf_had_flags=1
       for _sf_d in "${_sf_domains[@]}"; do
@@ -709,6 +713,10 @@ state.close()
     # Domain
     _sf_domain="$(sf_prompt_tty "What domain/URL do you want to scan?")"
     if [[ -n "${_sf_domain}" ]]; then
+      # Adding a domain requires root (writes .authorized_targets which is now 0640)
+      if [[ "${EUID}" -ne 0 ]]; then
+        sf_die "Adding a domain requires root. Re-run with: sudo secforge init --domain ${_sf_domain}"
+      fi
       sf_cfg_add_list_item "${_sf_cfg}" "DOMAIN" "${_sf_domain}"
       if [[ -w "${_sf_auth_file}" ]] || [[ ! -e "${_sf_auth_file}" ]]; then
         if ! grep -Fqx "${_sf_domain}" "${_sf_auth_file}" 2>/dev/null; then

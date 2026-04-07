@@ -268,7 +268,9 @@ sf_ensure_config_files() {
     : >"${auth_file}"
   fi
   chown root:"${group_name}" "${auth_file}" 2>/dev/null || true
-  chmod 0664 "${auth_file}" 2>/dev/null || true
+  # 0640: root rw, secforge group r, world none.
+  # Non-root scans cannot self-authorize — must use sudo secforge init --domain
+  chmod 0640 "${auth_file}" 2>/dev/null || true
 }
 
 sf_ensure_venv() {
