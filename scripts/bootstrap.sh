@@ -15,46 +15,29 @@ SECFORGE_GROUP="${SECFORGE_GROUP:-secforge}"
 . "${SCRIPT_DIR}/_lib.sh"
 
 # ---------------------------------------------------------------------------
-# gum installer — pinned to v0.14.x
+# gum installer — uses sf_install_github_release_binary (with SHA-256 verify)
 # ---------------------------------------------------------------------------
+# Note: this pulls the *latest* gum release and verifies it against the
+# upstream gum_<version>_checksums.txt file that Charmbracelet publishes on
+# every release. Version pinning is handled centrally in Task 4 (install.sh,
+# update-all.sh, `secforge update`), not here.
+#
+# To bypass verification (NOT RECOMMENDED): SECFORGE_SKIP_CHECKSUMS=1
 sf_install_gum() {
-  local install_dir="${SECFORGE_ROOT}/bin"
-  local gum_path="${install_dir}/gum"
+  local gum_path="${SECFORGE_ROOT}/bin/gum"
 
-  # Check if already installed with correct version
   if [[ -x "${gum_path}" ]]; then
     local current_ver
     current_ver="$("${gum_path}" --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "0.0.0")"
-    if sf_version_ge "${current_ver}" "0.14.0"; then
-      sf_log "gum ${current_ver} already installed."
-      return 0
-    fi
+    sf_log "gum ${current_ver} already installed at ${gum_path}."
+    return 0
   fi
 
-  local arch gum_ver="0.14.5"
-  arch="$(sf_detect_arch)"
-  local arch_suffix
-  case "${arch}" in
-    amd64) arch_suffix="x86_64" ;;
-    arm64) arch_suffix="arm64" ;;
-  esac
-
-  local url="https://github.com/charmbracelet/gum/releases/download/v${gum_ver}/gum_${gum_ver}_Linux_${arch_suffix}.tar.gz"
-  local tmp
-  tmp="$(sf_mktemp_dir)"
-  sf_log "Installing gum v${gum_ver}..."
-  sf_curl -o "${tmp}/gum.tar.gz" "${url}"
-  sf_extract_archive_to_dir "${tmp}/gum.tar.gz" "${tmp}/extract"
-  local found
-  found="$(find "${tmp}/extract" -maxdepth 3 -type f -name "gum" -print | head -1)"
-  if [[ -z "${found}" ]]; then
-    sf_warn "Could not find gum binary in archive."
-    rm -rf "${tmp}"
-    return 1
+  sf_log "Installing gum (Charmbracelet TUI) with SHA-256 verification..."
+  if ! sf_install_github_release_binary "charmbracelet/gum" "gum" "${gum_path}"; then
+    sf_die "Failed to install gum. To bypass verification (NOT RECOMMENDED), set SECFORGE_SKIP_CHECKSUMS=1."
   fi
-  install -m 0755 "${found}" "${gum_path}"
-  rm -rf "${tmp}"
-  sf_log "gum v${gum_ver} installed to ${gum_path}"
+  sf_log "gum installed to ${gum_path}"
 }
 
 # ---------------------------------------------------------------------------
